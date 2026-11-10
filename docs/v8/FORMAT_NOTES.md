@@ -597,8 +597,10 @@ Evidence:
 The decoder accepts only what was observed:
 
 - A type-37 object is a tag when it is stored as 2D, does not have the header
-  role, and its declared value fits the primary bytes. Any other type-37
-  object stays unknown.
+  role, and its declared value fits the primary bytes and is not longer than
+  the string limit of the reader (`max_string_bytes`). Any other type-37
+  object stays unknown, exactly as it was before tags were read. A type-37
+  object never makes a read fail.
 - A text value is decoded when the value type is 1, the last byte is zero, no
   other byte is zero, and either every byte is ASCII or the word at `0x13c`
   is 1252; the bytes are then read as Windows-1252. An integer value is
@@ -613,6 +615,16 @@ The decoder accepts only what was observed:
   and every definition match. A definition with another value type, or a byte
   that is not zero before the default, leaves the whole set undecoded and raw.
   Its strings have no code page word and are read as Windows-1252.
+- Every length comes from the file, so each is held to a limit. A tag set
+  with more than 1,048,576 definition bytes is not decoded. One call for all
+  tag sets of a document reads at most 1,048,576 bytes, counted after the
+  fixed head of each tag-set object; the first object that would pass that
+  sum ends the call, and it and the objects after it are not listed. The
+  smallest
+  definition is 12 bytes, so one call returns at most 87,381 definitions. The
+  largest tag set seen holds 1,256 definition bytes and 30 definitions, the
+  largest total in one file is 4,652 bytes, and the longest tag value is 189
+  bytes.
 
 What each part rests on:
 
@@ -627,7 +639,12 @@ What each part rests on:
   shared-cell definitions, tags without a host, a shared-cell instance as
   host, and the origin as the sum of the two pairs inside the stored range.
 - Constructed test bytes alone: negative integers, the corners of the range,
-  the string limit, and every refusal listed above.
+  the limits, and every refusal listed above.
+
+A reviewer can reproduce the first two groups from the public file. The
+parts that rest on the real-world files alone cannot be reproduced without
+those files. They are listed so that each can be taken out, and its form left
+raw, if that is preferred.
 
 Tag sets are decoded on request and not when a document is read. A tag is not
 part of the feature view. The reader does not join a tag to its definition or

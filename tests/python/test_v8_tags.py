@@ -11,6 +11,7 @@ import pytest
 import ezdgn
 from ezdgn.v8 import (
     TAG_SET_ELEMENT_TYPE,
+    V8_MAX_TAG_SET_BYTES,
     V8_TAG_SET_CODE,
     V8_TAG_VALUE_INTEGER,
     V8_TAG_VALUE_TEXT,
@@ -206,6 +207,38 @@ def test_tag_sets_of_a_document_are_decoded_on_request() -> None:
     assert with_sets.tag_set(None) is None
 
 
+def test_tag_set_decoding_is_bounded() -> None:
+    assert V8_MAX_TAG_SET_BYTES == 1_048_576
+
+    def filled(length: int) -> bytes:
+        # one definition whose default text fills the set up to a length
+        return _definition(b"A", 1, b"", 1, (0, 0), b"x" * (length - 13) + b"\x00")
+
+    # one tag set holds at most the limit
+    at_limit = filled(1_048_576)
+    assert len(at_limit) == 1_048_576
+    assert decode_tag_set(_named_object(1, _primary(at_limit))) is not None
+    assert decode_tag_set(_named_object(1, _primary(filled(1_048_578)))) is None
+    # The smallest definition is 12 bytes. A hostile set of them cannot ask
+    # for more definitions than the limit has room for.
+    smallest = _definition(b"", 0, b"", 1, (0, 0), b"\x00")
+    assert len(smallest) == 12
+    most = decode_tag_set(_named_object(1, _primary(smallest * 87_381)))
+    assert most is not None and len(most.definitions) == 87_381
+    assert decode_tag_set(_named_object(1, _primary(smallest * 87_382))) is None
+
+    # one call for a document: the third set of 400,000 bytes would pass the
+    # limit, so it is not decoded; it decodes when it is asked for alone
+    big = [_named_object(300 + index, _primary(filled(400_000))) for index in range(3)]
+    document = ezdgn.read_v8(V8)
+    page = document.raw.named_pages[0]
+    raw = replace(document.raw, named_pages=(replace(page, objects=tuple(big)),))
+    assert tag_set_objects(raw) == tuple(big)
+    assert [item.element_id for item in tag_sets(raw)] == [300, 301]
+    last = decode_tag_set(big[2])
+    assert last is not None and last.element_id == 302
+
+
 def test_a_tag_element_is_not_drawable_and_keeps_its_fields_in_the_cli_payload() -> None:
     import json
 
@@ -309,17 +342,19 @@ def test_public_tree_tags() -> None:
         tag_set.definition(element.data.tag_id).value_type == element.data.value_type
         for element in tags
     )
-    assert all(
-        element.data.value_bytes
-        == (
-            element.data.value.encode("ascii") + b"\x00"
-            if isinstance(element.data.value, str)
-            else struct.pack("<i", element.data.value)
-        )
-        for element in tags
-    )
     first, second = tags[:2]
-    assert (first.data.value, second.data.value) == ("Euchlora   X", 1)
+    assert (first.data.value, first.data.value_bytes) == (
+        "Euchlora   X",
+        b"Euchlora   X\x00",
+    )
+    assert (second.data.value, second.data.value_bytes) == (1, b"\x01\x00\x00\x00")
+    texts = Counter(element.data.value for element in tags if element.data.value_type == 1)
+    assert len(texts) == 903
+    assert texts.most_common(3) == [
+        ("Platanoides", 803),
+        ("Serrulata", 662),
+        ("Rubrum", 400),
+    ]
     counts = [element.data.value for element in tags if element.data.value_type == 3]
     assert (min(counts), max(counts)) == (1, 58)
 

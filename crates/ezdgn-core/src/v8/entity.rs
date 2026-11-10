@@ -781,7 +781,7 @@ fn decode_element(
         TAG_ELEMENT_TYPE
             if !raw.role.is_header() && common.stored_dimension == V8Dimension::Two =>
         {
-            decode_tag(raw, common, metadata, linkages, options)
+            Ok(decode_tag(raw, common, metadata, linkages, options))
         }
         101 => decode_matrix_header(raw),
         102 => decode_matrix_values(raw, options, MATRIX_INTEGER_BYTES, |bytes, offset| {
@@ -1237,7 +1237,9 @@ fn decode_dimension(
     Ok(V8ElementData::Dimension { anchor })
 }
 
-/// A tag whose stored value does not fit the primary bytes stays unknown.
+/// A tag whose stored value does not fit the primary bytes, or is longer
+/// than the string limit, stays unknown, as it was before tags were read.
+/// This never fails: a type-37 object must not stop a file from being read.
 /// The placement point is kept only when it lies inside the stored range.
 fn decode_tag(
     raw: &V8RawObject,
@@ -1245,17 +1247,11 @@ fn decode_tag(
     metadata: &V8ModelMetadata,
     linkages: &[V8Linkage],
     options: V8ScanOptions,
-) -> Result<V8ElementData, DgnError> {
-    let Some(tag) = decode_tag_fields(raw.primary_bytes(), linkages) else {
-        return Ok(V8ElementData::Unknown);
+) -> V8ElementData {
+    let Some(tag) = decode_tag_fields(raw.primary_bytes(), linkages, options.max_string_bytes)
+    else {
+        return V8ElementData::Unknown;
     };
-    if tag.value_bytes.len() > options.max_string_bytes {
-        return Err(DgnError::V8StringLimitExceeded {
-            context: format!("tag element {}", common.element_id),
-            actual: tag.value_bytes.len(),
-            limit: options.max_string_bytes,
-        });
-    }
     let range = common.range_uor;
     let origin = tag
         .placement_uor
@@ -1271,7 +1267,7 @@ fn decode_tag(
                 master: metadata.to_master(uor),
             }
         });
-    Ok(V8ElementData::Tag {
+    V8ElementData::Tag {
         tag_id: tag.tag_id,
         value_type: tag.value_type,
         value_bytes: tag.value_bytes,
@@ -1279,7 +1275,7 @@ fn decode_tag(
         tag_set_element_id: tag.tag_set_element_id,
         host_element_id: tag.host_element_id,
         origin,
-    })
+    }
 }
 
 fn decode_shared_cell_definition(
@@ -2714,7 +2710,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_value_obeys_the_string_limit() {
+    fn a_tag_value_longer_than_the_string_limit_stays_unknown() {
         let parts = TagParts {
             value: b"Oak\0",
             ..TagParts::default()
@@ -2723,24 +2719,94 @@ mod tests {
             &model_header(),
             &[tag_record(STANDALONE_TAG, 900, [0, 0, 0, 0], &parts, &[])],
         );
-        let read = |max_string_bytes| {
-            read_v8(
-                &dgn,
-                V8ScanOptions {
-                    max_string_bytes,
-                    ..V8ScanOptions::default()
-                },
-            )
+        let kind = |max_string_bytes| {
+            let options = V8ScanOptions {
+                max_string_bytes,
+                ..V8ScanOptions::default()
+            };
+            read_v8(&dgn, options).unwrap().models[0].elements[0].kind()
         };
-        assert_eq!(read(4).unwrap().models[0].elements[0].kind(), "TAG");
-        match read(3) {
-            Err(DgnError::V8StringLimitExceeded {
-                context,
-                actual,
-                limit,
-            }) => assert_eq!((context.as_str(), actual, limit), ("tag element 900", 4, 3)),
-            other => panic!("expected a string limit error, got {other:?}"),
+        assert_eq!(kind(4), "TAG");
+        // not an error: the file is read as it was before tags were decoded
+        assert_eq!(kind(3), "UNKNOWN");
+    }
+
+    #[test]
+    fn a_damaged_tag_never_stops_the_file_from_being_read() {
+        let good = tag_record(
+            STANDALONE_TAG,
+            900,
+            [0, 0, 10, 10],
+            &TagParts {
+                value: b"Oak\0",
+                ..TagParts::default()
+            },
+            &[tag_set_linkage(GROVE_SET_ID), host_linkage(HOST_ID, [2, 9])].concat(),
+        );
+        let primary_bytes = 0x144;
+        assert_eq!(read_u32(&good, 8), Some(primary_bytes as u32 / 2));
+        let read = |record: Vec<u8>| {
+            let dgn = dgn_with_objects(&model_header(), &[record]);
+            let document = read_v8(&dgn, V8ScanOptions::default()).unwrap();
+            document.models[0].elements[0].data.clone()
+        };
+        assert_eq!(read(good.clone()).kind_name(), "TAG");
+        // Every byte after the common header, one at a time: the read never
+        // fails, and the element is a tag or the unknown element it was.
+        for offset in COMMON_HEADER_BYTES..primary_bytes {
+            for value in [0x00, 0x7f, 0xff] {
+                let mut damaged = good.clone();
+                damaged[offset] = value;
+                let data = read(damaged);
+                assert!(
+                    matches!(data, V8ElementData::Tag { .. } | V8ElementData::Unknown),
+                    "offset {offset:#x} value {value:#x} gives {}",
+                    data.kind_name()
+                );
+            }
         }
+        // values that are not numbers in both stored pairs: a tag, no origin
+        let mut not_a_number = good.clone();
+        not_a_number[0xa0..0xc8].copy_from_slice(&[0xff; 0x28]);
+        assert!(matches!(
+            read(not_a_number),
+            V8ElementData::Tag { origin: None, .. }
+        ));
+        // a declared value that does not fit, and primary bytes cut short
+        let mut too_long = good.clone();
+        write_u32(&mut too_long, 0x138, 5);
+        assert_eq!(read(too_long), V8ElementData::Unknown);
+        let mut cut = good[..0x100].to_vec();
+        write_u32(&mut cut, 4, 0x80);
+        write_u32(&mut cut, 8, 0x80);
+        assert_eq!(read(cut), V8ElementData::Unknown);
+    }
+
+    #[test]
+    fn one_call_decodes_a_bounded_number_of_tag_set_bytes() {
+        // three tag sets of 400,000 definition bytes each: the third would
+        // pass the limit of one call, so it is not decoded
+        let mut default = vec![b'x'; 399_987];
+        default.push(0);
+        let definitions = definition_bytes("A", 1, "", 1, [0, 0], &default);
+        assert_eq!(definitions.len(), 400_000);
+        let named = (0..3)
+            .map(|index| tag_set_record(300 + index, "Big", &definitions))
+            .collect::<Vec<_>>();
+        let dgn = dgn_with_pages(&model_header(), &[], &[], &named);
+        let document = read_v8(&dgn, V8ScanOptions::default()).unwrap();
+        assert_eq!(document.raw.tag_set_objects().count(), 3);
+        assert_eq!(
+            document
+                .tag_sets()
+                .iter()
+                .map(|set| set.element_id)
+                .collect::<Vec<_>>(),
+            [300, 301]
+        );
+        // each of them decodes when it is asked for alone
+        let last = document.raw.tag_set_objects().last().unwrap();
+        assert_eq!(crate::v8::decode_v8_tag_set(last).unwrap().element_id, 302);
     }
 
     #[test]

@@ -101,6 +101,12 @@ semantic model. Python exposes the same operations plus `read_v8file()`.
 `open_document()` and `openfile()` dispatch between V7 and V8 without changing
 the legacy contracts.
 
+`V8ElementData::Tag` is a new variant of a public Rust enum: code that matches
+`V8ElementData` without a wildcard arm must add it. A type-37 object that is
+read as a tag has the kind `TAG` and no longer `UNKNOWN`, so Python's
+`unknown_elements` no longer lists it. Nothing else that `read_v8()` returned
+before changes.
+
 `read()`, `readfile()`, `scan_records()`, and `inspect_headers()` remain V7
 record APIs and intentionally reject V8/CFB input. This preserves existing V7
 types, iteration behavior, and error boundaries.

@@ -21,5 +21,7 @@ fuzz_target!(|data: &[u8]| {
         max_vertices: 100_000,
         max_hierarchy_depth: 128,
     };
-    let _ = read_v8(data, options);
+    if let Ok(document) = read_v8(data, options) {
+        let _ = document.tag_sets();
+    }
 });

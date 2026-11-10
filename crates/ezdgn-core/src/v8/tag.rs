@@ -10,6 +10,11 @@ pub const V8_TAG_VALUE_TEXT: u16 = 1;
 pub const V8_TAG_VALUE_INTEGER: u16 = 3;
 /// The eight bytes at `0x28` of a named object that holds a tag set.
 pub const V8_TAG_SET_CODE: [u8; 8] = [b't', b'e', b'S', b't', 0x81, 0x0f, 0x00, 0x00];
+/// Most definition bytes that one tag set may hold, and most definition
+/// bytes that one call decodes for all tag sets of a document. A definition
+/// needs at least 12 bytes, so this also bounds the number of definitions
+/// and the memory of the decoded result.
+pub const V8_MAX_TAG_SET_BYTES: usize = 1024 * 1024;
 
 const TAG_SET_ELEMENT_TYPE: u16 = 39;
 const TAG_SET_CODE_OFFSET: usize = 0x28;
@@ -106,7 +111,8 @@ pub fn decode_v8_tag_set(object: &V8RawObject) -> Option<V8TagSet> {
 /// exactly that many bytes, with at most one zero byte of padding after
 /// them. A definition is the name, the tag ID, the prompt, the value type,
 /// two unresolved words, a zero byte and the default. A value type other
-/// than text or integer makes the whole set undecodable.
+/// than text or integer makes the whole set undecodable, and so do more
+/// than [`V8_MAX_TAG_SET_BYTES`] definition bytes.
 #[must_use]
 pub fn decode_v8_tag_set_data(
     element_id: u64,
@@ -120,7 +126,11 @@ pub fn decode_v8_tag_set_data(
     if read_u32(primary, TAG_SET_SIZE_OFFSET + 4)? != size {
         return None;
     }
-    let end = TAG_SET_DEFINITIONS_OFFSET.checked_add(usize::try_from(size).ok()?)?;
+    let size = usize::try_from(size).ok()?;
+    if size > V8_MAX_TAG_SET_BYTES {
+        return None;
+    }
+    let end = TAG_SET_DEFINITIONS_OFFSET.checked_add(size)?;
     if !matches!(primary.get(end..)?, [] | [0]) {
         return None;
     }
@@ -164,15 +174,29 @@ pub fn decode_v8_tag_set_data(
     })
 }
 
-/// Decode every tag set of a scanned document, in stored order.
+/// Decode the tag sets of a scanned document, in stored order.
 ///
 /// A named object that carries the tag-set code but does not decode is not
-/// listed; [`V8RawDocument::tag_set_objects`] still returns it.
+/// listed; [`V8RawDocument::tag_set_objects`] still returns it. One call
+/// reads at most [`V8_MAX_TAG_SET_BYTES`] bytes after the fixed head of
+/// these objects: the first object that would pass that total ends the
+/// call, and it and the objects after it are not listed.
 #[must_use]
 pub fn decode_v8_tag_sets(raw: &V8RawDocument) -> Vec<V8TagSet> {
-    raw.tag_set_objects()
-        .filter_map(decode_v8_tag_set)
-        .collect()
+    let mut budget = V8_MAX_TAG_SET_BYTES;
+    let mut sets = Vec::new();
+    for object in raw.tag_set_objects() {
+        let cost = object
+            .primary_bytes()
+            .len()
+            .saturating_sub(TAG_SET_DEFINITIONS_OFFSET);
+        if cost > budget {
+            break;
+        }
+        budget -= cost;
+        sets.extend(decode_v8_tag_set(object));
+    }
+    sets
 }
 
 impl V8RawDocument {
@@ -238,11 +262,18 @@ pub(super) struct TagFields {
 }
 
 /// Read a tag element, or return `None` when the stored value does not fit
-/// the primary bytes.
-pub(super) fn decode_tag_fields(primary: &[u8], linkages: &[V8Linkage]) -> Option<TagFields> {
+/// the primary bytes or is longer than `max_value_bytes`.
+pub(super) fn decode_tag_fields(
+    primary: &[u8],
+    linkages: &[V8Linkage],
+    max_value_bytes: usize,
+) -> Option<TagFields> {
     let tag_id = read_u16(primary, TAG_ID_OFFSET)?;
     let value_type = read_u16(primary, TAG_VALUE_TYPE_OFFSET)?;
     let size = usize::try_from(read_u32(primary, TAG_VALUE_SIZE_OFFSET)?).ok()?;
+    if size > max_value_bytes {
+        return None;
+    }
     let code_page = read_u32(primary, TAG_CODE_PAGE_OFFSET)?;
     let value_bytes = primary.get(TAG_VALUE_OFFSET..TAG_VALUE_OFFSET.checked_add(size)?)?;
     let placement = [
@@ -579,7 +610,8 @@ mod tests {
 
     #[test]
     fn decodes_tag_values_of_the_two_observed_types() {
-        let fields = |parts: TagParts<'_>| decode_tag_fields(&tag_primary(&parts), &[]).unwrap();
+        let fields =
+            |parts: TagParts<'_>| decode_tag_fields(&tag_primary(&parts), &[], usize::MAX).unwrap();
         let value = |parts: TagParts<'_>| fields(parts).value;
         let text = |value: &str| Some(V8TagValue::Text(value.to_owned()));
 
@@ -664,19 +696,48 @@ mod tests {
             value: b"Oak\0",
             ..TagParts::default()
         });
-        assert!(decode_tag_fields(&primary, &[]).is_some());
+        assert!(decode_tag_fields(&primary, &[], usize::MAX).is_some());
         for end in 0..primary.len() {
             assert!(
-                decode_tag_fields(&primary[..end], &[]).is_none(),
+                decode_tag_fields(&primary[..end], &[], usize::MAX).is_none(),
                 "prefix {end}"
             );
         }
         let mut longer = primary.clone();
         longer[TAG_VALUE_SIZE_OFFSET] = 5;
-        assert!(decode_tag_fields(&longer, &[]).is_none());
-        let mut huge = primary;
+        assert!(decode_tag_fields(&longer, &[], usize::MAX).is_none());
+        let mut huge = primary.clone();
         huge[TAG_VALUE_SIZE_OFFSET..TAG_VALUE_SIZE_OFFSET + 4].copy_from_slice(&[0xff; 4]);
-        assert!(decode_tag_fields(&huge, &[]).is_none());
+        assert!(decode_tag_fields(&huge, &[], usize::MAX).is_none());
+        // a value of four bytes is read up to a limit of four bytes
+        assert!(decode_tag_fields(&primary, &[], 4).is_some());
+        assert!(decode_tag_fields(&primary, &[], 3).is_none());
+    }
+
+    #[test]
+    fn a_tag_set_holds_at_most_the_stated_number_of_definition_bytes() {
+        // one definition whose default text fills the set up to a length
+        let fill = |length: usize| {
+            let head = definition_bytes("A", 1, "", 1, [0, 0], b"");
+            let mut default = vec![b'x'; length - head.len() - 1];
+            default.push(0);
+            definition_bytes("A", 1, "", 1, [0, 0], &default)
+        };
+        let decode =
+            |definitions: &[u8]| decode_v8_tag_set_data(1, &tag_set_primary(definitions), &[]);
+        let at_limit = fill(V8_MAX_TAG_SET_BYTES);
+        assert_eq!(at_limit.len(), 1_048_576);
+        assert_eq!(decode(&at_limit).unwrap().definitions.len(), 1);
+        assert!(decode(&fill(V8_MAX_TAG_SET_BYTES + 1)).is_none());
+        // The smallest definition is 12 bytes. A hostile set of them cannot
+        // ask for more definitions than the limit has room for.
+        let smallest = definition_bytes("", 0, "", 1, [0, 0], b"\0");
+        assert_eq!(smallest.len(), 12);
+        assert_eq!(
+            decode(&smallest.repeat(87_381)).unwrap().definitions.len(),
+            87_381
+        );
+        assert!(decode(&smallest.repeat(87_382)).is_none());
     }
 
     #[test]
@@ -687,7 +748,7 @@ mod tests {
                 offset,
                 ..TagParts::default()
             };
-            decode_tag_fields(&tag_primary(&parts), &[])
+            decode_tag_fields(&tag_primary(&parts), &[], usize::MAX)
                 .unwrap()
                 .placement_uor
         };
@@ -705,7 +766,7 @@ mod tests {
     fn reads_the_tag_set_and_the_host_from_their_linkages() {
         let primary = tag_primary(&TagParts::default());
         let ids = |attributes: &[u8]| {
-            let tag = decode_tag_fields(&primary, &linkages(attributes)).unwrap();
+            let tag = decode_tag_fields(&primary, &linkages(attributes), usize::MAX).unwrap();
             (tag.tag_set_element_id, tag.host_element_id)
         };
         let set = tag_set_linkage(0x1_0000_0321);

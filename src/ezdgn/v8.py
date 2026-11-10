@@ -20,6 +20,7 @@ from ._core import (
     DEFAULT_MAX_V8_TOTAL_INFLATED_BYTES,
     DEFAULT_MAX_V8_VERTICES,
     V8_ITEM_INSTANCE_ENTRY_TYPE,
+    V8_MAX_TAG_SET_BYTES,
     V8_TAG_SET_CODE,
     V8_TAG_VALUE_INTEGER,
     V8_TAG_VALUE_TEXT,
@@ -841,14 +842,23 @@ def tag_sets(raw: V8RawDocument) -> tuple[V8TagSet, ...]:
     """Decode the tag sets of a scanned document, in stored order.
 
     A tag set that does not match the observed layout is not listed; it stays
-    among ``tag_set_objects(raw)``.
+    among ``tag_set_objects(raw)``. One call reads at most
+    ``V8_MAX_TAG_SET_BYTES`` bytes after the fixed head of these objects: the
+    first object that would pass that total ends the call, and it and the
+    objects after it are not listed.
     """
 
-    return tuple(
-        tag_set
-        for item in tag_set_objects(raw)
-        if (tag_set := decode_tag_set(item)) is not None
-    )
+    budget = V8_MAX_TAG_SET_BYTES
+    result: list[V8TagSet] = []
+    for item in tag_set_objects(raw):
+        cost = max(0, item.attribute_words * 2 - 0x3C)
+        if cost > budget:
+            break
+        budget -= cost
+        tag_set = decode_tag_set(item)
+        if tag_set is not None:
+            result.append(tag_set)
+    return tuple(result)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1401,6 +1411,7 @@ __all__ = [
     "SYMBOLOGY_BY_LEVEL",
     "TAG_SET_ELEMENT_TYPE",
     "V8_ITEM_INSTANCE_ENTRY_TYPE",
+    "V8_MAX_TAG_SET_BYTES",
     "V8_TAG_SET_CODE",
     "V8_TAG_VALUE_INTEGER",
     "V8_TAG_VALUE_TEXT",

@@ -44,5 +44,5 @@ pub use stream::{
 };
 pub use tag::{
     decode_v8_tag_set, decode_v8_tag_set_data, decode_v8_tag_sets, V8TagDefinition, V8TagSet,
-    V8TagValue, V8_TAG_SET_CODE, V8_TAG_VALUE_INTEGER, V8_TAG_VALUE_TEXT,
+    V8TagValue, V8_MAX_TAG_SET_BYTES, V8_TAG_SET_CODE, V8_TAG_VALUE_INTEGER, V8_TAG_VALUE_TEXT,
 };
