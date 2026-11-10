@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use ezdgn_core::{
     decode_v8_item_instance, read_v8, read_v8_stream, read_v8_streams, scan_v8_objects, DgnError,
-    V8Dimension, V8ElementData, V8ObjectRole, V8ReadOptions, V8ScanOptions,
+    V8Dimension, V8ElementData, V8ObjectRole, V8Point3, V8ReadOptions, V8ScanOptions,
 };
 use sha2::{Digest, Sha256};
 
@@ -227,25 +227,27 @@ fn the_fixture_shared_cell_instance_finds_and_places_its_definition() {
     assert_eq!(instances.len(), 1);
     let instance = instances[0];
     assert!(definition.matches(&instance.data));
-    let V8ElementData::SharedCellInstance {
-        origin, transform, ..
-    } = &instance.data
-    else {
+    let V8ElementData::SharedCellInstance { transform, .. } = &instance.data else {
         unreachable!();
     };
     // The instance scales by 10,000. origin + M * p, applied to the two
     // corners of the circle's box, gives the range the instance stores.
+    // This matrix is diagonal, so it does not show the order of the nine
+    // values; a constructed test covers that.
     assert_eq!(
         transform[6..],
         [1e4, 0.0, 0.0, 0.0, 1e4, 0.0, 0.0, 0.0, 1e4]
     );
     let place = |x: f64, y: f64| {
-        (
-            origin.uor.x + transform[6] * x + transform[7] * y,
-            origin.uor.y + transform[9] * x + transform[10] * y,
-        )
+        let point = instance
+            .data
+            .place_definition_point(V8Point3::new(x, y, 0.0))
+            .unwrap();
+        (point.x, point.y)
     };
     let range = instance.common.range_uor;
+    assert_eq!(place(-1.0, -1.0), (-1e4, 0.0));
+    assert_eq!(place(1.0, 1.0), (1e4, 2e4));
     assert_eq!(
         place(-1.0, -1.0),
         (range.low[0] as f64, range.low[1] as f64)

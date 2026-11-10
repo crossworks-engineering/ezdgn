@@ -456,6 +456,31 @@ class V8ElementData:
             return None
         return (values[0], values[1], values[2], values[3])
 
+    def place_definition_point(self, point: Point3) -> Point3 | None:
+        """Place a point of a shared-cell definition with this instance.
+
+        ``point`` is in the definition's own space, in UOR. The result is
+        ``origin + M * point`` in the UOR of the model, where ``M`` is the 3x3
+        matrix that the last nine ``transform`` values hold by rows. Returns
+        ``None`` for another element kind and for an instance that does not
+        hold fifteen values.
+        """
+
+        if (
+            self.kind != "SHARED_CELL_INSTANCE"
+            or self.origin is None
+            or len(self.transform) != 15
+        ):
+            return None
+        matrix = self.transform[6:]
+        x, y, z = point
+        origin = self.origin.uor
+        return (
+            origin[0] + (matrix[0] * x + matrix[1] * y + matrix[2] * z),
+            origin[1] + (matrix[3] * x + matrix[4] * y + matrix[5] * z),
+            origin[2] + (matrix[6] * x + matrix[7] * y + matrix[8] * z),
+        )
+
     @property
     def start_angle_degrees(self) -> float | None:
         if self.start_angle_radians is None:

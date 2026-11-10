@@ -298,12 +298,27 @@ def test_shared_cell_definitions_are_read_on_request() -> None:
     assert not definition.matches(changed(name="Other definition"))
     assert not definition.matches(changed(transform=values[:14]))
     # origin + M * p for the corners of the circle's box is the stored range
-    origin = instance.data.origin.uor
     matrix = instance.data.transform[6:]
     assert matrix == (1e4, 0.0, 0.0, 0.0, 1e4, 0.0, 0.0, 0.0, 1e4)
     low, high = instance.common.range_uor
-    assert (origin[0] + matrix[0] * -1, origin[1] + matrix[4] * -1) == low[:2]
-    assert (origin[0] + matrix[0] * 1, origin[1] + matrix[4] * 1) == high[:2]
+    assert instance.data.place_definition_point((-1.0, -1.0, 0.0)) == (-1e4, 0.0, 2e4)
+    assert instance.data.place_definition_point((1.0, 1.0, 0.0)) == (1e4, 2e4, 2e4)
+    assert instance.data.place_definition_point((-1.0, -1.0, 0.0))[:2] == low[:2]
+    assert instance.data.place_definition_point((1.0, 1.0, 0.0))[:2] == high[:2]
+    # The fixture's matrix is diagonal and does not show the order of the
+    # nine values. With nine different values each result is one row of the
+    # matrix times the point; by columns x would be 10 + 1 + 40 + 700.
+    turned = changed(
+        transform=(*values[:6], 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0),
+        origin=ezdgn.V8Point(uor=(10.0, 20.0, 30.0), master=(0.0, 0.0, 0.0)),
+    )
+    assert turned.data.place_definition_point((1.0, 10.0, 100.0)) == (
+        331.0,
+        674.0,
+        1017.0,
+    )
+    assert definition.elements[1].data.place_definition_point((1.0, 1.0, 1.0)) is None
+    assert changed(transform=values[:14]).data.place_definition_point((1.0, 1.0, 1.0)) is None
     # the document itself is unchanged: no definition among its elements
     assert all(
         item.kind != "SHARED_CELL_DEFINITION"

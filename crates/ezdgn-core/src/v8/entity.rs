@@ -318,6 +318,37 @@ impl V8ElementData {
         };
         <[f64; 4]>::try_from(values).ok()
     }
+
+    /// Place a point of a shared-cell definition with this instance.
+    ///
+    /// `point` is in the definition's own space, in UOR. The result is
+    /// `origin + M * point` in the UOR of the model, where `M` is the 3x3
+    /// matrix that the last nine `transform` values hold by rows. Returns
+    /// `None` for another element kind and for an instance that does not
+    /// hold fifteen values.
+    #[must_use]
+    pub fn place_definition_point(&self, point: V8Point3) -> Option<V8Point3> {
+        let Self::SharedCellInstance {
+            origin, transform, ..
+        } = self
+        else {
+            return None;
+        };
+        if transform.len() != SHARED_CELL_VALUE_COUNT {
+            return None;
+        }
+        let matrix = &transform[SHARED_CELL_RANGE_VALUES..];
+        let row = |row: usize| {
+            matrix[3 * row] * point.x
+                + matrix[3 * row + 1] * point.y
+                + matrix[3 * row + 2] * point.z
+        };
+        Some(V8Point3::new(
+            origin.uor.x + row(0),
+            origin.uor.y + row(1),
+            origin.uor.z + row(2),
+        ))
+    }
 }
 
 /// One semantic graphical element paired with all retained raw representations.
@@ -2379,18 +2410,32 @@ mod tests {
         }
         assert!(!definitions[1].matches(&short));
 
-        // placement: origin + M * p, with M the last nine values by rows
-        let matrix = &transform[6..];
+        // Placement: origin + M * p, with M the last nine values by rows.
+        // This matrix is not symmetric: read by columns it would turn the
+        // line the other way and put its far end at another point.
+        assert_eq!(transform[6..], quarter_turn);
         let placed = points(&definitions[1].elements[1])
             .iter()
             .map(|(x, y, _, _)| {
-                (
-                    origin.uor.x + matrix[0] * x + matrix[1] * y,
-                    origin.uor.y + matrix[3] * x + matrix[4] * y,
-                )
+                let point = instance
+                    .data
+                    .place_definition_point(V8Point3::new(*x, *y, 0.0))
+                    .unwrap();
+                (point.x, point.y, point.z)
             })
             .collect::<Vec<_>>();
-        assert_eq!(placed, [(9000.0, 100.0), (3000.0, 8100.0)]);
+        assert_eq!(placed, [(9000.0, 100.0, 0.0), (3000.0, 8100.0, 0.0)]);
+        // only an instance with its fifteen values places a point
+        let point = V8Point3::new(1.0, 1.0, 1.0);
+        assert!(definitions[1].elements[0]
+            .data
+            .place_definition_point(point)
+            .is_none());
+        let mut short = instance.data.clone();
+        if let V8ElementData::SharedCellInstance { transform, .. } = &mut short {
+            transform.pop();
+        }
+        assert!(short.place_definition_point(point).is_none());
 
         assert_eq!(
             read_v8_shared_cell_definitions(&dgn, V8ScanOptions::default(), 0)
@@ -2480,6 +2525,29 @@ mod tests {
         );
         assert_eq!(elements[0].child_indices, [1]);
         assert_eq!(elements[1].parent_index, Some(0));
+    }
+
+    #[test]
+    fn an_instance_places_a_definition_point_with_its_matrix_by_rows() {
+        // Nine different matrix values and a point with three different
+        // coordinates: each result is one row of the matrix times the point.
+        let matrix = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let dgn = dgn_with_objects(
+            &model_header(),
+            &[named_instance("CELL_A", LARGE, matrix, [10.0, 20.0, 30.0])],
+        );
+        let document = read_v8(&dgn, V8ScanOptions::default()).unwrap();
+        let instance = &document.models[0].elements[0].data;
+        let placed = instance
+            .place_definition_point(V8Point3::new(1.0, 10.0, 100.0))
+            .unwrap();
+        // x: 10 + 1 + 20 + 300; y: 20 + 4 + 50 + 600; z: 30 + 7 + 80 + 900.
+        // By columns x would be 10 + 1 + 40 + 700.
+        assert_eq!((placed.x, placed.y, placed.z), (331.0, 674.0, 1017.0));
+        let origin = instance
+            .place_definition_point(V8Point3::new(0.0, 0.0, 0.0))
+            .unwrap();
+        assert_eq!((origin.x, origin.y, origin.z), (10.0, 20.0, 30.0));
     }
 
     #[test]

@@ -251,7 +251,8 @@ for element in document.models[0].elements:
 A `V8SharedCellDefinition` has its `name` and its `elements`: the header, then
 the components with their hierarchy, in the definition's own coordinates. An
 instance places a definition point `p` at `origin + M * p`, where `M` is the
-3x3 matrix by rows in the last nine values of `element.data.transform`. The
+3x3 matrix by rows in the last nine values of `element.data.transform`;
+`element.data.place_definition_point(p)` returns that point in UOR. The
 reader does not copy the components into the model.
 
 Item data that a file attaches to an element (Item Types, and block attributes
