@@ -399,15 +399,21 @@ def _v8_entity_payload(element: V8Element) -> dict[str, Any]:
         "text",
         "style",
         "columns",
-        "tag_id",
-        "value_type",
-        "value",
-        "tag_set_element_id",
-        "host_element_id",
     ):
-        value = getattr(data, name, None)
+        value = getattr(data, name)
         if value is not None:
             payload[name] = value
+    if isinstance(data, V8TagData):
+        for name in (
+            "tag_id",
+            "value_type",
+            "value",
+            "tag_set_element_id",
+            "host_element_id",
+        ):
+            value = getattr(data, name)
+            if value is not None:
+                payload[name] = value
     if data.orientation:
         payload["orientation"] = data.orientation
     if data.orientations:
