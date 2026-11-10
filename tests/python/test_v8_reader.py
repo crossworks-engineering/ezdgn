@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 import sys
@@ -276,6 +277,26 @@ def test_shared_cell_definitions_are_read_on_request() -> None:
     ]
     assert definition.matches(instance)
     assert not definition.matches(definition.elements[1])
+
+    # The name alone is not a match: the six range values must be equal too,
+    # bit for bit. The nine matrix values are not part of the match.
+    def changed(**fields: object) -> ezdgn.V8Element:
+        return dataclasses.replace(
+            instance, data=dataclasses.replace(instance.data, **fields)
+        )
+
+    values = instance.data.transform
+    assert values[2] == 0.0 and values[3] == 1.0
+    other_range = changed(transform=(*values[:3], 2.0, *values[4:]))
+    assert other_range.data.name == definition.name
+    assert not definition.matches(other_range)
+    other_zero = changed(transform=(*values[:2], -0.0, *values[3:]))
+    assert other_zero.data.transform == values
+    assert not definition.matches(other_zero)
+    assert definition.matches(changed(transform=(*values[:6], *([7.0] * 9))))
+    assert not definition.matches(changed(name=None))
+    assert not definition.matches(changed(name="Other definition"))
+    assert not definition.matches(changed(transform=values[:14]))
     # origin + M * p for the corners of the circle's box is the stored range
     origin = instance.data.origin.uor
     matrix = instance.data.transform[6:]

@@ -458,7 +458,8 @@ impl V8SharedCellDefinition {
     ///
     /// An instance repeats the name and the six range values of its
     /// definition. Both must be equal: one file can hold several definitions
-    /// with one name.
+    /// with one name. The values are compared bit for bit, so `-0.0` does
+    /// not match `0.0`.
     #[must_use]
     pub fn matches(&self, instance: &V8ElementData) -> bool {
         let V8ElementData::SharedCellInstance {
@@ -471,7 +472,12 @@ impl V8SharedCellDefinition {
         };
         *name == self.name
             && transform.len() == SHARED_CELL_VALUE_COUNT
-            && self.range_values() == transform.get(..SHARED_CELL_RANGE_VALUES)
+            && self.range_values().is_some_and(|range| {
+                range
+                    .iter()
+                    .zip(transform)
+                    .all(|(stored, repeated)| stored.to_bits() == repeated.to_bits())
+            })
     }
 }
 
@@ -2327,6 +2333,33 @@ mod tests {
         assert!(definitions[1].matches(&instance.data));
         assert!(!definitions[2].matches(&instance.data));
         assert!(!definitions[1].matches(&definitions[1].elements[1].data));
+
+        // the match is bit for bit: a zero with the other sign is another
+        // value, and so is a value one step away
+        let changed = |index: usize, value: f64| {
+            let mut data = instance.data.clone();
+            let V8ElementData::SharedCellInstance { transform, .. } = &mut data else {
+                unreachable!();
+            };
+            transform[index] = value;
+            data
+        };
+        assert!(definitions[1].matches(&changed(0, 0.0)));
+        assert!(!definitions[1].matches(&changed(0, -0.0)));
+        assert!(!definitions[1].matches(&changed(3, f64::from_bits(4000.0_f64.to_bits() + 1))));
+        // the matrix is not part of the match
+        assert!(definitions[1].matches(&changed(6, 7.0)));
+        // an instance without a name, or with another number of values
+        let mut unnamed = instance.data.clone();
+        if let V8ElementData::SharedCellInstance { name, .. } = &mut unnamed {
+            *name = None;
+        }
+        assert!(!definitions[1].matches(&unnamed));
+        let mut short = instance.data.clone();
+        if let V8ElementData::SharedCellInstance { transform, .. } = &mut short {
+            transform.pop();
+        }
+        assert!(!definitions[1].matches(&short));
 
         // placement: origin + M * p, with M the last nine values by rows
         let matrix = &transform[6..];

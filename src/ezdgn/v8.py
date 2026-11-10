@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import struct
 from dataclasses import dataclass
 from typing import Any, Iterable, Iterator, Literal, TypeAlias, cast
 
@@ -583,16 +584,20 @@ class V8SharedCellDefinition:
 
         An instance repeats the name and the six range values of its
         definition. Both must be equal: one file can hold several definitions
-        with one name.
+        with one name. The values are compared bit for bit, so ``-0.0`` does
+        not match ``0.0``.
         """
 
         data = instance.data
+        range_values = self.range_values
         return (
             data.kind == "SHARED_CELL_INSTANCE"
             and data.name is not None
             and data.name == self.name
             and len(data.transform) == 15
-            and self.range_values == data.transform[:6]
+            and range_values is not None
+            and struct.pack("<6d", *range_values)
+            == struct.pack("<6d", *data.transform[:6])
         )
 
 
