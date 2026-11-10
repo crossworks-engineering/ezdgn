@@ -54,6 +54,14 @@ inputs and are not redistributed by this repository.
   master/sub units `m` / `m`, 66,053 graphical objects and feature entities,
   comprising 18 lines and 66,035 line strings. All 66,053 associated auxiliary
   records remain addressable.
+- Item data observation (2026-11-10, same bytes and hash): each of the 66,053
+  records holds two entries of type `0x56ff0000`, and all 132,106 decode as
+  item instances (`WaterMain` and `Metadata`). This file is the public evidence
+  for the entry layout and the item instance layout in `FORMAT_NOTES.md`. It
+  does not exercise the UTF-16 string form, one-byte strings above `0x7f`, or
+  a set bit 31 in the entry length word; `FORMAT_NOTES.md` states the evidence
+  for those. `tests/python/test_v8_item_data.py` reads the file when
+  `EZDGN_PUBLIC_V8_DIR` names a folder that holds it and skips otherwise.
 
 #### Tree text-node labels with tags
 
@@ -70,6 +78,15 @@ The descriptions and supplied application context are not treated as byte
 layout documentation. The files demonstrate that the model/page/object rules
 and text-node feature policy work beyond the GDAL baseline. Unknown custom or
 tag data remains raw unless independently characterized.
+
+### Real-world files that are not redistributed
+
+The auxiliary entry layout and the item instance layout were also run on 90
+real-world production files held by a contributor (85 2D files and five 3D
+files converted from DWG). They are not public, are not part of this
+repository, and no byte, name or text from them is recorded here. Only counts
+are reported, in `FORMAT_NOTES.md`. Rules that only these files exercise are
+marked there as such and are covered by constructed test bytes.
 
 ### Repository observations
 

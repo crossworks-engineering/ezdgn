@@ -313,6 +313,17 @@ def _inspect_v8(
                         }
                         for auxiliary in element.auxiliary_records
                     ]
+                    if element.item_instances:
+                        record["item_instances"] = [
+                            {
+                                "entry_id": item.entry_id,
+                                "schema_element_id": item.schema_element_id,
+                                "class_name": item.class_name,
+                                "attributes": [list(pair) for pair in item.attributes],
+                                "properties": [list(pair) for pair in item.properties],
+                            }
+                            for item in element.item_instances
+                        ]
                 records.append(record)
             payload["records"] = records
         models.append(payload)

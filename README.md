@@ -28,7 +28,7 @@ stable ABI (`abi3`) with a Python 3.10 minimum.
 | V7/ISFF 2D read | Native entities, hierarchy, metadata, linkages, and raw records |
 | V7/ISFF 2D write | Standalone or custom-seed creation of common primitives |
 | V7/ISFF 3D | Signature, raw record, and common-header inspection only |
-| V8 DGN read | Native 2D/3D models, common geometry, hierarchy, linkages, auxiliary data, and lossless raw objects |
+| V8 DGN read | Native 2D/3D models, common geometry, hierarchy, linkages, auxiliary data, item instances, and lossless raw objects |
 | V8 DGN write/edit | Not supported |
 
 The V7 reader decodes line, line string, shape, curve, ellipse, arc, text,
@@ -237,6 +237,25 @@ per defined level: `level_id` as graphical headers store it, the user-visible
 `number`, `name`, and the level's own line style, weight and color index) and
 `document.level(level_id)`. An element header that holds the ByLevel sentinel
 `0xffffffff` in its weight, color or style takes the value of its level.
+
+Item data that a file attaches to an element (Item Types, and block attributes
+of drawings converted from DWG) is available as `element.item_instances`:
+
+```python
+for element in document.models[0].elements:
+    for item in element.item_instances:
+        print(element.common.element_id, item.class_name, item.as_dict())
+```
+
+Each `V8ItemInstance` has the item class name, the stored root attributes
+(`item.schema_reference` is the schema name and version) and the property
+names with their text values in stored order. Values are text as stored; no
+type conversion is applied. The underlying auxiliary record is split into
+`record.entries` (`V8AuxiliaryEntry`: type word, entry ID and exact data). An
+entry whose bytes do not match the one recorded layout is not decoded and
+keeps its raw bytes; this is never an error. In Python both are decoded when
+they are read, not when the document is loaded, so keep the result when you
+need it more than once.
 
 Malformed structure raises `InvalidDgnError`; configured resource ceilings
 raise `DgnLimitError`. The complete clean-room boundary, evidence ledger, and

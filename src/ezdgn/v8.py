@@ -19,8 +19,11 @@ from ._core import (
     DEFAULT_MAX_V8_STRING_BYTES,
     DEFAULT_MAX_V8_TOTAL_INFLATED_BYTES,
     DEFAULT_MAX_V8_VERTICES,
+    V8_ITEM_INSTANCE_ENTRY_TYPE,
     DgnLimitError,
 )
+from ._core import decode_v8_auxiliary_payload as _decode_v8_auxiliary_payload
+from ._core import decode_v8_item_instance_data as _decode_v8_item_instance_data
 from ._core import inspect_v8_cfb as _inspect_v8_cfb
 from ._core import read_v8_document as _read_v8_document
 from ._core import scan_v8_object_records as _scan_v8_object_records
@@ -146,8 +149,43 @@ class V8RawObject:
 
 
 @dataclass(frozen=True, slots=True)
+class V8AuxiliaryEntry:
+    """One framed entry of an auxiliary-record payload.
+
+    ``type_id`` selects the meaning of ``data``. Its high half groups related
+    entry types and its low half numbers the types of one group. ``size_word``
+    is the stored size word: the low 31 bits are ``len(data)`` and bit 31 is a
+    writer flag whose meaning is unresolved.
+    """
+
+    index: int
+    offset: int
+    type_id: int
+    entry_id: int
+    size_word: int
+    reserved: int
+    data: bytes
+
+    @property
+    def type_major(self) -> int:
+        return self.type_id >> 16
+
+    @property
+    def type_minor(self) -> int:
+        return self.type_id & 0xFFFF
+
+    @property
+    def size_flag(self) -> bool:
+        return bool(self.size_word & 0x8000_0000)
+
+
+@dataclass(frozen=True, slots=True)
 class V8AuxiliaryRecord:
-    """One exact V8 auxiliary/XAttribute record."""
+    """One exact V8 auxiliary/XAttribute record.
+
+    ``flags`` keeps its historical name; it is the number of entries in the
+    payload.
+    """
 
     index: int
     stream_path: str
@@ -159,6 +197,59 @@ class V8AuxiliaryRecord:
     flags: int
     raw_bytes: bytes
     payload: bytes
+
+    @property
+    def entries(self) -> tuple[V8AuxiliaryEntry, ...] | None:
+        """The entries of the payload, or ``None`` when the payload does not
+        follow the entry layout exactly.
+
+        The payload is split on each access and nothing is stored, so a
+        document costs no more to read when the entries are not used.
+        """
+
+        return decode_auxiliary_entries(self.payload, self.flags)
+
+
+@dataclass(frozen=True, slots=True)
+class V8ItemInstance:
+    """One item instance attached to an element.
+
+    ``class_name`` is the item class, ``attributes`` are the attributes of the
+    stored root element (``instanceId`` and ``xmlns`` in the observed files)
+    and ``properties`` are the property names with their text values, all in
+    stored order and exactly as stored. ``schema_element_id`` is the element ID
+    of the named object that holds the schema text.
+    """
+
+    entry_id: int
+    schema_element_id: int
+    class_name: str
+    attributes: tuple[tuple[str, str], ...]
+    properties: tuple[tuple[str, str], ...]
+
+    @property
+    def schema_reference(self) -> str | None:
+        """The ``xmlns`` attribute: schema name and version of the class."""
+
+        return self.attribute("xmlns")
+
+    def attribute(self, name: str, default: str | None = None) -> str | None:
+        """Return the value of the first root attribute called ``name``."""
+
+        return next((value for key, value in self.attributes if key == name), default)
+
+    def get(self, name: str, default: str | None = None) -> str | None:
+        """Return the value of the first property called ``name``."""
+
+        return next((value for key, value in self.properties if key == name), default)
+
+    def as_dict(self) -> dict[str, str]:
+        """Return the properties as a mapping; the first of equal names wins."""
+
+        result: dict[str, str] = {}
+        for key, value in self.properties:
+            result.setdefault(key, value)
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +438,22 @@ class V8Element:
     child_indices: tuple[int, ...]
     linkages: tuple[V8Linkage, ...]
     auxiliary_records: tuple[V8AuxiliaryRecord, ...]
+
+    @property
+    def item_instances(self) -> tuple[V8ItemInstance, ...]:
+        """The item instances attached to this element, in stored order.
+
+        They are decoded from ``auxiliary_records`` on each access. An entry
+        that does not match the observed layout is not listed; it stays
+        available through the entries of its record.
+        """
+
+        return tuple(
+            item
+            for record in self.auxiliary_records
+            for entry in record.entries or ()
+            if (item := decode_item_instance(entry)) is not None
+        )
 
     @property
     def kind(self) -> str:
@@ -710,6 +817,67 @@ def _aux_record_from_core(row: dict[str, Any]) -> V8AuxiliaryRecord:
     )
 
 
+def _aux_entries_from_core(
+    rows: list[dict[str, Any]] | None,
+) -> tuple[V8AuxiliaryEntry, ...] | None:
+    if rows is None:
+        return None
+    return tuple(
+        V8AuxiliaryEntry(
+            index=row["index"],
+            offset=row["offset"],
+            type_id=row["type_id"],
+            entry_id=row["entry_id"],
+            size_word=row["size_word"],
+            reserved=row["reserved"],
+            data=row["data"],
+        )
+        for row in rows
+    )
+
+
+def _item_instance_from_core(row: dict[str, Any]) -> V8ItemInstance:
+    return V8ItemInstance(
+        entry_id=row["entry_id"],
+        schema_element_id=row["schema_element_id"],
+        class_name=row["class_name"],
+        attributes=tuple((name, value) for name, value in row["attributes"]),
+        properties=tuple((name, value) for name, value in row["properties"]),
+    )
+
+
+def decode_auxiliary_entries(
+    payload: bytes, entry_count: int
+) -> tuple[V8AuxiliaryEntry, ...] | None:
+    """Split an auxiliary payload that declares ``entry_count`` entries.
+
+    Returns ``None`` when the payload does not hold exactly that many entries
+    followed by the closing word. Nothing is guessed or skipped.
+    """
+
+    if not 0 <= entry_count <= 0xFFFF_FFFF:
+        return None
+    return _aux_entries_from_core(
+        cast(
+            "list[dict[str, Any]] | None",
+            _decode_v8_auxiliary_payload(bytes(payload), entry_count),
+        )
+    )
+
+
+def decode_item_instance(entry: V8AuxiliaryEntry) -> V8ItemInstance | None:
+    """Decode an entry of type ``V8_ITEM_INSTANCE_ENTRY_TYPE``.
+
+    Returns ``None`` for another entry type and for data that does not match
+    the observed layout exactly; the entry keeps its raw ``data`` either way.
+    """
+
+    if entry.type_id != V8_ITEM_INSTANCE_ENTRY_TYPE:
+        return None
+    row = _decode_v8_item_instance_data(entry.entry_id, entry.data)
+    return None if row is None else _item_instance_from_core(cast("dict[str, Any]", row))
+
+
 def _aux_page_from_core(row: dict[str, Any]) -> V8AuxiliaryPage:
     return V8AuxiliaryPage(
         stream_path=row["stream_path"],
@@ -938,6 +1106,7 @@ __all__ = [
     "DEFAULT_MAX_V8_STRING_BYTES",
     "DEFAULT_MAX_V8_TOTAL_INFLATED_BYTES",
     "DEFAULT_MAX_V8_VERTICES",
+    "V8AuxiliaryEntry",
     "V8AuxiliaryPage",
     "V8AuxiliaryRecord",
     "V8CfbEntry",
@@ -946,6 +1115,7 @@ __all__ = [
     "V8Document",
     "V8Element",
     "V8ElementData",
+    "V8ItemInstance",
     "V8Level",
     "V8Linkage",
     "V8MeshFace",
@@ -964,6 +1134,9 @@ __all__ = [
     "NAME_LINKAGE_SIGNATURE",
     "SYMBOLOGY_BY_CELL",
     "SYMBOLOGY_BY_LEVEL",
+    "V8_ITEM_INSTANCE_ENTRY_TYPE",
+    "decode_auxiliary_entries",
+    "decode_item_instance",
     "inspect_v8_container",
     "level_table",
     "read_v8",

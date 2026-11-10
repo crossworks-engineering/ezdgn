@@ -15,6 +15,7 @@ DEFAULT_MAX_V8_MODELS: Final[int]
 DEFAULT_MAX_V8_STRING_BYTES: Final[int]
 DEFAULT_MAX_V8_VERTICES: Final[int]
 DEFAULT_MAX_V8_HIERARCHY_DEPTH: Final[int]
+V8_ITEM_INSTANCE_ENTRY_TYPE: Final[int]
 
 class DgnError(Exception): ...
 class InvalidDgnError(DgnError): ...
@@ -243,6 +244,12 @@ def scan_v8_object_records(
     data: bytes, limits: V8LimitsRow
 ) -> dict[str, object]: ...
 def read_v8_document(data: bytes, limits: V8LimitsRow) -> dict[str, object]: ...
+def decode_v8_auxiliary_payload(
+    payload: bytes, entry_count: int
+) -> list[dict[str, object]] | None: ...
+def decode_v8_item_instance_data(
+    entry_id: int, data: bytes
+) -> dict[str, object] | None: ...
 def scan_v7_records(
     data: bytes,
     max_file_size: int,

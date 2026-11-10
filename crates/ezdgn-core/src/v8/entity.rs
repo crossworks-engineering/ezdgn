@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::DgnError;
 
+use super::item::{decode_v8_item_instance, V8ItemInstance};
 use super::linkage::{decode_v8_linkages, decode_windows_1252, V8Linkage};
 use super::metadata::{
     decode_model_metadata, read_f64, read_i64, V8Dimension, V8ModelMetadata, V8Point3, V8Range3,
@@ -281,6 +282,21 @@ impl V8Element {
     #[must_use]
     pub fn is_top_level(&self) -> bool {
         self.parent_index.is_none()
+    }
+
+    /// Item instances decoded from the auxiliary records, in stored order.
+    ///
+    /// They are decoded on each call and are not stored with the element. An
+    /// entry that does not match the observed layout is not listed and stays
+    /// available through `auxiliary_records`.
+    #[must_use]
+    pub fn item_instances(&self) -> Vec<V8ItemInstance> {
+        self.auxiliary_records
+            .iter()
+            .filter_map(V8AuxiliaryRecord::entries)
+            .flatten()
+            .filter_map(|entry| decode_v8_item_instance(&entry))
+            .collect()
     }
 }
 
@@ -1394,7 +1410,12 @@ fn geometry_error(raw: &V8RawObject, context: impl Into<String>) -> DgnError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::v8::raw::test_support::{dgn_with_objects, MODEL_ID};
+    use crate::v8::auxiliary::test_support::{entry, payload};
+    use crate::v8::item::test_support::item_data;
+    use crate::v8::raw::test_support::{
+        auxiliary_record, dgn_with_objects, dgn_with_objects_and_auxiliary, MODEL_ID,
+    };
+    use crate::v8::V8_ITEM_INSTANCE_ENTRY_TYPE;
 
     const MODEL_HEADER_TYPE: u32 = 66;
     const MODEL_HEADER_BYTES: usize = 0xe8;
@@ -1461,6 +1482,215 @@ mod tests {
         let elements = &document.models[0].elements;
         assert_eq!(elements.len(), 1);
         elements[0].clone()
+    }
+
+    const SHARED_CELL_ELEMENT_ID: u64 = 602;
+    const ITEM_ATTRIBUTES: [(&str, &str); 2] = [
+        ("instanceId", ""),
+        ("xmlns", "Sample__x0020__Library.01.00"),
+    ];
+
+    fn read_with_auxiliary(records: &[Vec<u8>]) -> V8Document {
+        let dgn = dgn_with_objects_and_auxiliary(
+            &model_header(),
+            &[shared_cell_record(0, [1.0, 2.0, 0.0])],
+            records,
+        );
+        read_v8(&dgn, V8ScanOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn item_instances_are_decoded_from_the_auxiliary_record_of_their_element() {
+        let pump = item_data(
+            900,
+            "Pump",
+            &ITEM_ATTRIBUTES,
+            &[("Tag", "P-101"), ("Note", "")],
+        );
+        let history = item_data(
+            900,
+            "History",
+            &ITEM_ATTRIBUTES,
+            &[("Installed", "1986-01-01")],
+        );
+        let other = [3, 0, 0, 0, 9, 9];
+        let record = auxiliary_record(
+            SHARED_CELL_ELEMENT_ID,
+            3,
+            &payload(&[
+                entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, true, &pump),
+                entry(0x5709_0000, 0, true, &other),
+                entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 2, true, &history),
+            ]),
+        );
+        let stray = auxiliary_record(
+            SHARED_CELL_ELEMENT_ID + 1,
+            1,
+            &payload(&[entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, true, &pump)]),
+        );
+        let document = read_with_auxiliary(&[record, stray]);
+        let element = &document.models[0].elements[0];
+        assert_eq!(element.kind(), "SHARED_CELL_INSTANCE");
+        assert_eq!(element.auxiliary_records.len(), 1);
+        let entries = element.auxiliary_records[0].entries().unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.type_id, entry.entry_id))
+                .collect::<Vec<_>>(),
+            [
+                (V8_ITEM_INSTANCE_ENTRY_TYPE, 1),
+                (0x5709_0000, 0),
+                (V8_ITEM_INSTANCE_ENTRY_TYPE, 2)
+            ]
+        );
+        assert_eq!(entries[0].data(), pump);
+        assert_eq!(entries[1].data(), other);
+
+        let items = element.item_instances();
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            (items[0].entry_id, items[0].class_name.as_str()),
+            (1, "Pump")
+        );
+        assert_eq!(items[0].schema_element_id, 900);
+        assert_eq!(items[0].property("Tag"), Some("P-101"));
+        assert_eq!(items[0].property("Note"), Some(""));
+        assert_eq!(
+            items[0].schema_reference(),
+            Some("Sample__x0020__Library.01.00")
+        );
+        assert_eq!(
+            (items[1].entry_id, items[1].class_name.as_str()),
+            (2, "History")
+        );
+        assert_eq!(items[1].property("Installed"), Some("1986-01-01"));
+    }
+
+    #[test]
+    fn item_data_that_does_not_decode_keeps_the_element_and_its_raw_record() {
+        let good = item_data(900, "Pump", &ITEM_ATTRIBUTES, &[("Tag", "P-101")]);
+        let mut truncated = good.clone();
+        truncated.pop();
+        let mut nested = good.clone();
+        let end = nested.len() - 1;
+        nested.insert(end, 0x02);
+        for (case, records, expected_items) in [
+            (
+                "one damaged entry beside a good one",
+                vec![auxiliary_record(
+                    SHARED_CELL_ELEMENT_ID,
+                    2,
+                    &payload(&[
+                        entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, true, &truncated),
+                        entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 2, true, &good),
+                    ]),
+                )],
+                vec![2],
+            ),
+            (
+                "a layout that was not observed",
+                vec![auxiliary_record(
+                    SHARED_CELL_ELEMENT_ID,
+                    1,
+                    &payload(&[entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, true, &nested)]),
+                )],
+                vec![],
+            ),
+            (
+                "an entry count that does not match the payload",
+                vec![auxiliary_record(
+                    SHARED_CELL_ELEMENT_ID,
+                    2,
+                    &payload(&[entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, true, &good)]),
+                )],
+                vec![],
+            ),
+            (
+                "a payload without the closing word",
+                vec![auxiliary_record(
+                    SHARED_CELL_ELEMENT_ID,
+                    1,
+                    &entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, true, &good),
+                )],
+                vec![],
+            ),
+            (
+                "an empty payload",
+                vec![auxiliary_record(SHARED_CELL_ELEMENT_ID, 0, &[])],
+                vec![],
+            ),
+        ] {
+            let document = read_with_auxiliary(&records);
+            let element = &document.models[0].elements[0];
+            assert_eq!(element.kind(), "SHARED_CELL_INSTANCE", "{case}");
+            assert_eq!(element.auxiliary_records.len(), 1, "{case}");
+            assert_eq!(
+                element.auxiliary_records[0].as_bytes(),
+                records[0].as_slice(),
+                "{case}"
+            );
+            assert_eq!(
+                element
+                    .item_instances()
+                    .iter()
+                    .map(|item| item.entry_id)
+                    .collect::<Vec<_>>(),
+                expected_items,
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_prefix_and_mutation_of_a_file_with_item_data_is_panic_free() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let item = item_data(900, "Pump", &ITEM_ATTRIBUTES, &[("Tag", "P-101")]);
+        let record = auxiliary_record(
+            SHARED_CELL_ELEMENT_ID,
+            1,
+            &payload(&[entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, true, &item)]),
+        );
+        // every single-byte change of the record, with the page rebuilt
+        for offset in 0..record.len() {
+            for value in [0x00, 0x01, 0x7f, 0x80, 0xff] {
+                let mut mutated = record.clone();
+                mutated[offset] = value;
+                let dgn = dgn_with_objects_and_auxiliary(
+                    &model_header(),
+                    &[shared_cell_record(0, [1.0, 2.0, 0.0])],
+                    &[mutated],
+                );
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    let _ = read_v8(&dgn, V8ScanOptions::default());
+                }));
+                assert!(
+                    outcome.is_ok(),
+                    "panic at record offset {offset} value {value}"
+                );
+            }
+        }
+        // every prefix and sampled byte flips of the whole container
+        let dgn = dgn_with_objects_and_auxiliary(
+            &model_header(),
+            &[shared_cell_record(0, [1.0, 2.0, 0.0])],
+            &[record],
+        );
+        for end in (0..=dgn.len()).step_by(7) {
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                let _ = read_v8(&dgn[..end], V8ScanOptions::default());
+            }));
+            assert!(outcome.is_ok(), "panic at prefix {end}");
+        }
+        for offset in (0..dgn.len()).step_by(13) {
+            let mut mutated = dgn.clone();
+            mutated[offset] ^= 0xff;
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                let _ = read_v8(&mutated, V8ScanOptions::default());
+            }));
+            assert!(outcome.is_ok(), "panic after mutation at {offset}");
+        }
     }
 
     #[test]

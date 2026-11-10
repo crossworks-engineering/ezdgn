@@ -14,7 +14,8 @@ The reader is a bounded, read-only pipeline:
 4. parse the model index, model storages, object pages, and auxiliary pages;
 5. retain every recognized raw object as an addressable exact byte sequence;
 6. decode model metadata, standard graphical elements, hierarchy, linkages,
-   and auxiliary-record associations; and
+   auxiliary-record associations, auxiliary-record entries, and item instances;
+   and
 7. expose the result through Rust, Python, CLI inspection, and an explicit XY
    plotting adapter.
 
@@ -32,7 +33,12 @@ The semantic model currently covers:
   symbology, and stored/effective dimension;
 - model identity, name, description, dimension, units, UOR scale, origin, and
   extents;
-- property and unknown linkages with exact bytes; and
+- property and unknown linkages with exact bytes;
+- the entries of an auxiliary-record payload with their type word, entry ID
+  and exact data;
+- item instances on graphical elements: the item class name, the stored root
+  attributes, and each property name with its text value, for the one stored
+  layout recorded in `FORMAT_NOTES.md`; and
 - unknown graphical, control, named, linkage, and auxiliary records through
   the raw model.
 
@@ -50,8 +56,10 @@ This milestone does not support:
 - complete dimension annotation semantics;
 - full B-spline knot/weight/surface semantics;
 - shared-cell definition lookup and transformed instance expansion;
-- product-specific custom objects, schemas, Item Types, business properties,
-  or arbitrary XAttribute payload semantics;
+- product-specific custom objects, schema text, typed or converted Item Type
+  values, item instance layouts other than the recorded one (nested elements,
+  wider counts and lengths), business properties, or other XAttribute payload
+  semantics;
 - font resource resolution or application-specific display fidelity; or
 - camera-aware 3D rendering. The optional plotter is documented as an XY
   preview and leaves the native Z coordinates unchanged.
@@ -95,7 +103,8 @@ A release claiming this scope must pass all of the following:
   offsets, with the source and hash recorded in `PROVENANCE.md`;
 - malformed page, object, model-index, auxiliary-record, compressed-stream,
   hierarchy, vertex, string, and resource-limit cases fail deterministically
-  without panic;
+  without panic, and malformed auxiliary entries and item instances stay raw
+  without panic and without rejecting the document;
 - the bounded fuzz target builds and the parser benchmark runs;
 - all Rust and Python tests, fixture integrity checks, formatting, and clippy
   checks pass;
