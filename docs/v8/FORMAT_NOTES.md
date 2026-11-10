@@ -606,7 +606,9 @@ this order:
 Evidence:
 
 - The public tree label file in `PROVENANCE.md` holds 13,808 tags in one 2D
-  model, all standalone: 6,904 text values and 6,904 integer values (1 to
+  model. All have the standalone role: none is a component of a complex
+  element, though each is attached to a host by a linkage (see below). There
+  are 6,904 text values and 6,904 integer values (1 to
   58), and all decode. Its one tag set has two definitions, `Species` (ID 1,
   text) and `Tree Count` (ID 2, integer). Every tag names that set, and its
   tag ID is defined there with its value type. Every tag has a host linkage
@@ -645,7 +647,11 @@ The decoder accepts only what was observed:
   role, and its declared value fits the primary bytes and is not longer than
   the string limit of the reader (`max_string_bytes`). Any other type-37
   object stays unknown, exactly as it was before tags were read. A type-37
-  object never makes a read fail.
+  object never makes a read fail. That an object with the header role is not
+  a tag is a choice and not an observation: none of the 15,013 type-37
+  objects seen has that role (13,808 in the public file and one in the
+  fixture are standalone; in the confidential files 480 are standalone and
+  724 are components).
 - A text value is decoded when the value type is 1, the last byte is zero, no
   other byte is zero, and either every byte is ASCII or the word at `0x13c`
   is 1252; the bytes are then read as Windows-1252. An integer value is
@@ -659,17 +665,24 @@ The decoder accepts only what was observed:
 - A tag set is decoded only when the code, the two equal lengths, the padding
   and every definition match. A definition with another value type, or a byte
   that is not zero before the default, leaves the whole set undecoded and raw.
-  Its strings have no code page word and are read as Windows-1252.
+  Its strings have no code page word and are read as Windows-1252. This
+  reading rests on the confidential files alone: the one tag set of the
+  public file holds no byte above `0x7f`.
 - Every length comes from the file, so each is held to a limit. A tag set
   with more than 1,048,576 definition bytes is not decoded. One call for all
-  tag sets of a document reads at most 1,048,576 bytes, counted after the
-  fixed head of each tag-set object; the first object that would pass that
-  sum ends the call, and it and the objects after it are not listed. The
-  smallest
-  definition is 12 bytes, so one call returns at most 87,381 definitions. The
-  largest tag set seen holds 1,256 definition bytes and 30 definitions, the
-  largest total in one file is 4,652 bytes, and the longest tag value is 189
-  bytes.
+  tag sets of a document reads at most 1,048,576 bytes in sum. A tag-set
+  object costs the definition bytes it declares plus its attribute bytes,
+  which hold its name. An object that cannot decode within the limit is
+  passed over and costs nothing: its two stored sizes differ, they declare
+  more than the limit, or its own cost is over the limit. The first other
+  object that would pass the sum ends the call, and it and the objects after
+  it are not listed. The smallest definition is 12 bytes, so one call returns
+  at most 87,381 definitions. The name linkage of a set is read with the
+  default limits of the reader. The largest tag set seen holds 1,256
+  definition bytes and 30 definitions, the largest total in one file is 4,652
+  bytes, and the longest tag value is 189 bytes; these three figures are from
+  the confidential real-world files (the tag set of the public file holds 80
+  bytes).
 
 What each part rests on:
 
@@ -726,6 +739,7 @@ left raw, if that is preferred.
 | Shared-cell definitions: an instance repeats the six range values of its definition, and definitions can share a name | The six values of each instance were compared with those of every definition of that name in the file | 2,874 of 2,953 instances match one definition (one matches two equal ones); 79 name no definition of their file; the checked-in fixture shows one matching pair | `shared_cell_definitions_hold_their_components_in_their_own_space` |
 | Tags: a text byte above `0x7f` is Windows-1252 when the word at `0x13c` is 1252 | The word was read in every tag; the bytes are in the range that Windows-1252 text uses | 1,194 of 1,194 text tags store 1252; 18 values hold such a byte, all from `0xa0` to `0xff` | `decodes_tag_values_of_the_two_observed_types` |
 | Tags: bytes can follow the value, and a text value can be empty | The value length at `0x138` was compared with the primary size in every tag | 10 or 11 bytes follow the value in every text tag of that writer; 674 of 1,194 text values are empty | the same test |
+| Tag sets: a string byte above `0x7f` is Windows-1252 | The strings of every tag set were decoded; the bytes are in the range that Windows-1252 text uses | 92 strings in 89 decoded sets hold such a byte, all from `0xa0` to `0xff`; the public tag set holds none | `decodes_the_definitions_of_a_tag_set` |
 | Tag sets: a prompt can be empty | The definitions of every tag set were decoded to the declared length | 55 of 671 definitions | `decodes_the_definitions_of_a_tag_set` |
 | Tags: a tag can be a component of a shared-cell definition, can have no host, and can have a shared-cell instance as host | The host linkage of every tag was looked up among the elements of its model | 526 tags in definitions; 1,012 text tags without a host; 182 with a shared-cell instance as host, found in the same model | `tags_are_read_with_their_value_their_set_and_their_host` |
 | Tags: the origin is the sum of the pairs at `0xa0` and `0xb8` | The sum was compared with the stored range of the tag | inside the range in 1,204 of 1,204 tags; for the 182 tags with a host the first pair alone is outside it | `the_placement_is_the_sum_of_the_two_stored_pairs`, `a_tag_origin_is_given_only_inside_the_stored_range` |

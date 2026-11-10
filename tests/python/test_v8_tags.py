@@ -160,7 +160,13 @@ def test_tag_set_decodes_from_hand_made_bytes() -> None:
         # the byte before the default is not zero
         _named_object(
             1,
-            _primary(b"A\x00" + struct.pack("<H", 1) + b"\x00" + struct.pack("<HHH", 1, 0, 0) + b"\x01\x00"),
+            _primary(
+                b"A\x00"
+                + struct.pack("<H", 1)
+                + b"\x00"
+                + struct.pack("<HHH", 1, 0, 0)
+                + b"\x01\x00"
+            ),
         ),
         # a text default without its closing byte; a short integer default
         _named_object(1, _primary(_definition(b"A", 1, b"", 1, (0, 0), b"abc"))),
@@ -169,7 +175,9 @@ def test_tag_set_decodes_from_hand_made_bytes() -> None:
         _named_object(1, _primary(DEFINITIONS)[:0x38]),
     ],
 )
-def test_tag_sets_that_do_not_match_the_layout_stay_raw(item: ezdgn.V8RawObject) -> None:
+def test_tag_sets_that_do_not_match_the_layout_stay_raw(
+    item: ezdgn.V8RawObject,
+) -> None:
     assert decode_tag_set(item) is None
 
 
@@ -383,7 +391,31 @@ def test_tag_set_decoding_is_bounded() -> None:
     assert [item.element_id for item in tag_sets(raw)] == [300]
 
 
-def test_a_tag_element_is_not_drawable_and_keeps_its_fields_in_the_cli_payload() -> None:
+def test_the_cli_payload_reads_the_fields_of_an_element_strictly() -> None:
+    from ezdgn.__main__ import _v8_entity_payload
+
+    class WithoutStyle:
+        """Element data that has lost one of its base fields."""
+
+        def __init__(self, data: ezdgn.V8ElementData) -> None:
+            self._data = data
+
+        def __getattr__(self, name: str) -> object:
+            if name == "style":
+                raise AttributeError(name)
+            return getattr(self._data, name)
+
+    element = ezdgn.read_v8(V8).models[0].elements[0]
+    payload = _v8_entity_payload(element)
+    # an element that is no tag gets no tag key, and is not asked for one
+    assert not {"tag_id", "value_type", "tag_set_element_id"} & set(payload)
+    # a base field that is missing is an error and is not left out in silence
+    broken = replace(element, data=WithoutStyle(element.data))  # type: ignore[arg-type]
+    with pytest.raises(AttributeError, match="style"):
+        _v8_entity_payload(broken)
+
+
+def test_a_tag_is_not_drawable_and_keeps_its_fields_in_the_cli_payload() -> None:
     import json
 
     from ezdgn.__main__ import _v8_entity_payload
@@ -492,7 +524,9 @@ def test_public_tree_tags() -> None:
         b"Euchlora   X\x00",
     )
     assert (second.data.value, second.data.value_bytes) == (1, b"\x01\x00\x00\x00")
-    texts = Counter(element.data.value for element in tags if element.data.value_type == 1)
+    texts = Counter(
+        element.data.value for element in tags if element.data.value_type == 1
+    )
     assert len(texts) == 903
     assert texts.most_common(3) == [
         ("Platanoides", 803),
@@ -516,7 +550,10 @@ def test_public_tree_tags() -> None:
         for element, host in zip(tags, hosts, strict=True)
     )
     assert Counter(
-        (element.data.tag_id, struct.unpack_from("<2d", element.raw.primary_bytes, 0xB8))
+        (
+            element.data.tag_id,
+            struct.unpack_from("<2d", element.raw.primary_bytes, 0xB8),
+        )
         for element in tags
     ) == {(1, (0.0, -10.0)): 6_904, (2, (0.0, -20.0)): 6_904}
     assert {element.common.range_uor for element in tags} == {((0, 0, 0), (0, 0, 0))}
