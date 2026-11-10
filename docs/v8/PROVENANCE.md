@@ -56,11 +56,13 @@ inputs and are not redistributed by this repository.
   records remain addressable.
 - Item data observation (2026-11-10, same bytes and hash): each of the 66,053
   records holds two entries of type `0x56ff0000`, and all 132,106 decode as
-  item instances (`WaterMain` and `Metadata`). This file is the public evidence
-  for the entry layout and the item instance layout in `FORMAT_NOTES.md`. It
-  does not exercise the UTF-16 string form, one-byte strings above `0x7f`, or
-  a set bit 31 in the entry length word; `FORMAT_NOTES.md` states the evidence
-  for those. `tests/python/test_v8_item_data.py` reads the file when
+  item instances (`WaterMain` and `Metadata`). The file holds nine more
+  auxiliary records, on named objects, with 12 entries of other types;
+  `FORMAT_NOTES.md` counts all 66,062 records and 132,118 entries. This file
+  is the public evidence for the entry layout and the item instance layout in
+  `FORMAT_NOTES.md`. It does not exercise the UTF-16 string form, one-byte
+  strings above `0x7f`, or a set bit 31 in the entry length word;
+  `FORMAT_NOTES.md` states the evidence for those. `tests/python/test_v8_item_data.py` reads the file when
   `EZDGN_PUBLIC_V8_DIR` names a folder that holds it and skips otherwise.
 
 #### Tree text-node labels with tags
@@ -91,14 +93,37 @@ data remains raw unless independently characterized.
 
 ### Real-world files that are not redistributed
 
-The auxiliary entry layout and the item instance layout were also run on 90
-real-world production files held by a contributor (85 2D files and five 3D
-files converted from DWG). They are not public, are not part of this
-repository, and no byte, name or text from them is recorded here. Only counts
-are reported, in `FORMAT_NOTES.md`. Rules that only these files exercise are
-marked there as such and are covered by constructed test bytes. The tag
-element and tag set layouts were run on the same 90 files under the same
-terms (2026-11-10).
+Every layout that this log adds on 2026-11-10 was also run on 90 real-world
+production files held by a contributor (85 2D files and five 3D files
+converted from DWG): the auxiliary entries, the item instances, the stored
+quaternion of 3D text, the shared-cell definitions with the match and the
+placement of an instance, and the tag elements and tag sets.
+
+These files are highly confidential. They cannot be shared, they are not
+part of this repository, and no byte, name or text from them is recorded
+here. Only counts are reported.
+
+Most rules have public evidence too, from the checked-in fixture or from the
+two public files above. These rules have none:
+
+- item data: the `fb` UTF-16 string form, and bytes `0x80` and above in the
+  `fa` form;
+- auxiliary entries: bit 31 of the length word being set;
+- 3D text: the order of the four quaternion values for a text that is turned;
+- shared cells: the row order of the nine matrix values of an instance, and
+  the match by name and range values where definitions share a name; and
+- tags: text bytes above `0x7f` with the code page word, bytes after the
+  value, empty values and prompts, tags in shared-cell definitions, tags
+  without a host or with a shared-cell instance as host, and the origin.
+
+Each of them is listed in `FORMAT_NOTES.md` under "Rules that rest on
+confidential files", with how the rule was found, the counts, and the
+constructed test that covers it. The
+method was the same as for the public files: read the bytes of lawfully held
+files, state a rule, count where it holds and where it does not, and check
+it against something that the reader already decodes in the same file. A
+reviewer cannot reproduce those counts. Each such rule can be taken out, and
+its form left raw, if that is preferred.
 
 ### Repository observations
 

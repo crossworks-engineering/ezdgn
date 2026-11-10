@@ -13,10 +13,12 @@ The reader is a bounded, read-only pipeline:
 3. inflate complete zlib payloads with a hard output ceiling;
 4. parse the model index, model storages, object pages, and auxiliary pages;
 5. retain every recognized raw object as an addressable exact byte sequence;
-6. decode model metadata, standard graphical elements, hierarchy, linkages,
-   auxiliary-record associations, auxiliary-record entries, item instances,
-   and tag elements; and
-7. expose the result through Rust, Python, CLI inspection, and an explicit XY
+6. decode model metadata, standard graphical elements, tag elements,
+   hierarchy, linkages, and auxiliary-record associations;
+7. decode on request, and not when a document is read, the entries of an
+   auxiliary record, item instances, shared-cell definitions, and tag sets;
+   and
+8. expose the result through Rust, Python, CLI inspection, and an explicit XY
    plotting adapter.
 
 The semantic model currently covers:
@@ -93,6 +95,10 @@ make a file appear fully decoded.
 - `FORMAT_NOTES.md` records the byte-level evidence used by the decoder.
 - A rule observed in only one file is not silently generalized. Ambiguous
   records remain raw or partially typed.
+- Some rules rest on lawfully held files that are confidential and cannot be
+  shared. A reviewer cannot reproduce them from public files. `FORMAT_NOTES.md`
+  lists each of them under "Rules that rest on confidential files", with how
+  it was found, its counts, and the constructed test that covers it.
 
 ## Public APIs and compatibility
 
@@ -101,11 +107,14 @@ semantic model. Python exposes the same operations plus `read_v8file()`.
 `open_document()` and `openfile()` dispatch between V7 and V8 without changing
 the legacy contracts.
 
-`V8ElementData::Tag` is a new variant of a public Rust enum: code that matches
-`V8ElementData` without a wildcard arm must add it. A type-37 object that is
-read as a tag has the kind `TAG` and no longer `UNKNOWN`, so Python's
-`unknown_elements` no longer lists it. Nothing else that `read_v8()` returned
-before changes.
+`V8ElementData::Tag` and `V8ElementData::SharedCellDefinition` are new
+variants of a public Rust enum: code that matches `V8ElementData` without a
+wildcard arm must add them. `DgnError::V8ModelIndexOutOfRange` is a new
+variant of the error enum in the same way. A type-37 object that is read as a
+tag has the kind `TAG` and no longer `UNKNOWN`, so Python's `unknown_elements`
+no longer lists it. Nothing else that `read_v8()` returned before changes: a
+shared-cell definition is returned only by the calls that read definitions,
+and a type-34 header in a model is the unknown complex element it was.
 
 `read()`, `readfile()`, `scan_records()`, and `inspect_headers()` remain V7
 record APIs and intentionally reject V8/CFB input. This preserves existing V7

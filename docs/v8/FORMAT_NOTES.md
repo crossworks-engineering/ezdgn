@@ -223,15 +223,22 @@ A stored-3D type-17 text holds two finite `f64` values at `0x80` and `0x88`,
 a unit quaternion in scalar-first order `(w, x, y, z)` at `0x90`, and its
 origin at `0xb0`. The six values from `0x80` are kept together as the text's
 `orientation`; `quaternion` returns the last four. The two 3D texts of the
-checked-in fixture hold `(1, 0, 0, 0)`. In five real-world files that are not
-checked in, all 1,875 3D texts hold a unit quaternion there and 162 are turned
-about Z. For the 149 turned texts of three or more characters, the local X axis
-given by the first row of the quaternion's rotation matrix, the rule the V7
-reader uses for 3D elements, points from the stored origin along the stored
-range: up for 140, down for 4 and left for 5. Only those files exercise a
-turned text; the meaning of the two values at `0x80` and `0x88` is unresolved.
-The reader returns the quaternion as stored and does not turn it into an
-angle.
+checked-in fixture hold `(1, 0, 0, 0)`. That is the only public evidence, and
+it shows no more than a text that is not turned. The order of the four values
+for a turned text rests on confidential files (see
+"Rules that rest on confidential files" below). In five such files all
+1,875 3D texts hold a unit quaternion there. Only the first and the last of
+the four values are ever not zero, which is a turn about Z when the scalar
+comes first: 1,713 texts are not turned, 157 are turned by a quarter turn and
+5 by a half turn. For the 149 turned texts of three or more characters, the
+local X axis given by the first row of the quaternion's rotation matrix (the
+rule the V7 reader uses for 3D elements) points up for 140, down for 4 and
+left for 5. In all 149 the stored origin lies at the end of the stored range
+where such a text starts: the low Y end, the high Y end and the high X end.
+The 144 quarter turns tell this rule from its transpose, which swaps up and
+down; the 5 half turns do not. The meaning of the two values at `0x80` and
+`0x88` is unresolved. The reader returns the quaternion as stored, computes
+nothing from it, and does not turn it into an angle.
 
 The type-17 text payload starts right after the fixed header (editable-field
 word at `0xa8` for 2D, `0xc8` for 3D; payload at `0xaa` / `0xca`), its byte
@@ -333,9 +340,10 @@ coordinates in the definition's own space.
 A type-35 instance repeats its definition in the fifteen values it stores from
 `0x70`: the first six equal the definition's six range values bit for bit, and
 the last nine are a 3x3 matrix `M` by rows. The instance places a definition
-point `p` at `origin + M * p`, in UOR. One file can hold several definitions
-with one name and different ranges, so an instance is matched by the name and
-the six values together.
+point `p` at `origin + M * p`, in UOR; `place_definition_point` returns that
+point. One file can hold several definitions with one name and different
+ranges, so an instance is matched by the name and the six values together,
+and the six values are compared bit for bit.
 
 Evidence:
 
@@ -344,15 +352,21 @@ Evidence:
   `(-1, -1, 0)` to `(1, 1, 0)`. Its one instance has `M` = 10,000 times the
   identity and origin `(0, 1e4, 2e4)`. `origin + M * p` for the range
   corners gives `(-1e4, 0)` and `(1e4, 2e4)`, the range the instance
-  stores.
-- In 90 real-world files that are not checked in, all 30,757 type-34 headers
-  decode with this layout and every one of their 438,312 components has a
-  parent. Of 2,953 instances, 2,874 match a definition by name and range
-  values (one matches two equal definitions) and 79 have no definition with
-  their name in the file. For the 2,376 matched instances whose definition
-  holds only lines, line strings and shapes, `origin + M * p` over the
-  component vertices reproduces the stored instance range within 1% for 2,358;
-  the other 18 are unresolved.
+  stores. This matrix is diagonal, so the fixture shows the placement but
+  not the order of the nine values.
+- In 90 confidential real-world files (see
+  "Rules that rest on confidential files" below), all 30,757 type-34
+  headers decode with this layout and every one of their 438,312 components
+  has a parent. Of 2,953 instances, 2,874 match a definition by name and
+  range values (one matches two equal definitions) and 79 have no definition
+  with their name in the file. For the 2,376 matched instances whose
+  definition holds only lines, line strings and shapes, `origin + M * p` over
+  the component vertices reproduces the stored instance range within 1% for
+  2,358; the other 18 are unresolved. The order of the nine values rests on
+  these files alone: 2,319 of the 2,376 matrices are symmetric in their XY
+  part and give the same points by rows and by columns, and 57 are not. Of
+  those 57, 47 reproduce the range by rows, none does by columns, and 10 do
+  neither way.
 - The two public sample files in `PROVENANCE.md` hold no definition.
 
 The reader returns the definitions with their components in definition space.
@@ -392,14 +406,21 @@ left over:
 
 | Source | Records | Entries | Entries per record | Bit 31 of the length word |
 | --- | ---: | ---: | --- | --- |
-| checked-in fixture (ODA) | 1 | 1 | 1 | clear |
+| checked-in fixture | 1 | 1 | 1 | clear |
 | public water mains file (`f34bbb1b408b`) | 66,062 | 132,118 | 1, 2, 4 | clear |
-| 90 real-world files that are not checked in | 783 | 1,024 | 0 to 8 | set |
+| 90 confidential real-world files | 783 | 1,024 | 0 to 8 | set |
+
+The table counts every auxiliary record of a file. In the public file 66,053
+records are on the graphical elements, with the 132,106 item entries that
+`PROVENANCE.md` reports, and 9 records are on named objects, with 12 entries
+of other types.
 
 The fixture's one record is on a named object: type word `0x57090000`, entry
 ID 0, 102 data bytes that begin `03 00 00 00 c0 00 00 00 78 9c` (a `u32` 3, the
 inflated size 192, then a zlib stream). The meaning of bit 31 is unresolved;
-the length is correct with the bit masked off in all three sources. Entry data
+the length is correct with the bit masked off in all three sources. That the
+bit can be set rests on confidential files alone (see
+"Rules that rest on confidential files" below). Entry data
 other than the item instances below is not interpreted. A payload that does
 not hold exactly the declared number of entries followed by the closing word
 is not split at all and stays a raw payload. The entry count comes from the
@@ -471,23 +492,28 @@ a space; names are returned as stored. Every property in that schema has
 text. In that file the entry ID equals the `ID` the schema records for the
 class.
 
-Five real-world files that are not checked in (drawings converted from DWG,
-with block attributes turned into item instances) agree: 140 instances on
+Five confidential real-world files (drawings converted from DWG, with block
+attributes turned into item instances) agree: 140 instances on
 shared-cell instances, all decoded, each with the same two root attributes and
 with the properties of a class in a schema held by a type-39 object (15
 properties in 139 instances, one in the other). In those 140 instances the
-first property value equals the text that the file draws next to the cell. They also give the only evidence for three parts of the
-layout:
+first property value equals the text that the file draws next to the cell.
+They also give the only evidence for three parts of the layout. A reviewer
+cannot reproduce these three from public files; how each was found is in
+"Rules that rest on confidential files" below:
 
 - the `fb` UTF-16 string form (11 strings in 11 instances), used where a
-  string has a character above U+00FF (U+0192 in those files);
-- bytes `0x80` and above in the `fa` form (`81`, `bd`, `be`), read as the code
-  points U+0081, U+00BD and U+00BE. The same text drawn as a text element
-  decodes to the same characters, and the writer used the `fb` form for U+0192,
-  which a Windows-1252 byte could have held, so the `fa` form is taken as one
-  code point per byte and not as a code page. No other byte from `0x80` to
-  `0x9f` was seen in the `fa` form; and
-- bit 31 of the entry length word being set.
+  string has a character above U+00FF (U+0192 in those files). Each of the 11
+  strings equals the text of a text element in the same file;
+- bytes `0x80` and above in the `fa` form (36 strings in 36 instances: `81` in
+  19, `bd` in 16, `be` in 1), read as the code points U+0081, U+00BD and
+  U+00BE. Each of the 36 strings equals the text of a text element in the
+  same file, and the writer used the `fb` form for U+0192, which a
+  Windows-1252 byte could have held, so the `fa` form is taken as one code
+  point per byte and not as a code page. No other byte from `0x80` to `0x9f`
+  was seen in the `fa` form; and
+- bit 31 of the entry length word being set (in all 140 item entries, and in
+  all 1,024 entries of those files).
 
 In those files the entry ID was 1 for a class whose schema `ID` is not 1 in 34
 instances, so the entry ID is exposed but is not treated as the class ID.
@@ -519,7 +545,7 @@ decoded by the reader; the remaining words of that object (`0x30` to the start
 of the text) and the meaning of the constants at `0x00`, `0x09`, `0x11` and
 `0x14` of the instance data are unresolved. The item tests use constructed
 bytes; the public file is read by an optional test when it is present, and the
-five real-world files are not included in the regression fixtures.
+five confidential files are not included in the regression fixtures.
 
 ## Tag elements and tag sets
 
@@ -589,7 +615,7 @@ Evidence:
   the pair at `0xb8` is `(0, -10)` in the text tags and `(0, -20)` in the
   integer tags. The stored range of every tag in this file is the single
   point `(0, 0)`, so the file cannot confirm the placement point.
-- In 85 real-world 2D files that are not checked in, from another writer, 14
+- In 85 confidential real-world 2D files, from another writer, 14
   files hold 678 tags in their models and 526 more are components of
   shared-cell definitions. 1,194 hold text and all decode; 18 of these values
   hold bytes above `0x7f`, all from `0xa0` to `0xff`, and every tag with text
@@ -606,7 +632,7 @@ Evidence:
   with 671 definitions, all text, and tag IDs from 1 upward in stored order;
   12 sets repeat a name. 92 of their strings hold bytes above `0x7f`, all from
   `0xa0` to `0xff`. Two objects do not match the layout and stay raw.
-- Five real-world 3D files that are not checked in hold no tag and no tag set.
+- Five confidential real-world 3D files hold no tag and no tag set.
 - The checked-in fixture holds one type-37 object (element ID 93). It is
   stored as 3D, has no linkage, and holds 3 at `0xd2`, 4 at `0x138` and four
   zero bytes at `0x140`, where its primary bytes end. That agrees with the
@@ -662,8 +688,10 @@ What each part rests on:
 
 A reviewer can reproduce the first two groups from the public file. The
 parts that rest on the real-world files alone cannot be reproduced without
-those files. They are listed so that each can be taken out, and its form left
-raw, if that is preferred.
+those files, which are confidential. They are listed in
+"Rules that rest on confidential files" below, with the counts and
+the constructed test for each, so that each can be taken out, and its form
+left raw, if that is preferred.
 
 Tag sets are decoded on request and not when a document is read. A tag is not
 part of the feature view. The reader does not join a tag to its definition or
@@ -672,6 +700,35 @@ of a definition, the word at `0x30` of a tag set, the writer-specific words of
 a tag, and tags stored as 3D are unresolved. The tag tests use constructed
 bytes; the public file is read by an optional test when it is present, and
 the real-world files are not included in the regression fixtures.
+
+## Rules that rest on confidential files
+
+Some rules above have no public evidence. Their evidence is a set of 90
+real-world production files, 85 2D files and five 3D files, that are highly
+confidential. They cannot be shared. No byte, name or text of them is in this
+repository, and a reviewer cannot reproduce the counts below.
+
+Each rule was found in the same way as the rules with public evidence: the
+bytes of lawfully held files were read, a rule was stated, and it was counted
+where the rule holds and where it does not. Each rule was also checked
+against something that the reader already decodes in the same file. The table
+gives that check, the counts, and the constructed test that covers the rule.
+The tests use made-up bytes only. Each rule can be taken out, and its form
+left raw, if that is preferred.
+
+| Rule | How it was found | Counts | Constructed test |
+| --- | --- | --- | --- |
+| Item data: the `fb` string form holds UTF-16LE units | Read as UTF-16LE, the string equals the text of a text element in the same file | 11 strings in 11 of 140 instances; each holds a character above U+00FF; 11 of 11 equal a text element | `one_byte_strings_are_code_points_and_wide_strings_are_utf16` |
+| Item data: a byte `0x80` or above in the `fa` form is one code point | Read as one code point per byte, the string equals the text of a text element in the same file; the writer uses the `fb` form for a character that a Windows-1252 byte could hold | 36 strings in 36 of 140 instances (`81` in 19, `bd` in 16, `be` in 1); 36 of 36 equal a text element | the same test |
+| Auxiliary entries: bit 31 of the length word is a flag and not part of the length | With the bit masked off the lengths split every record with no byte left over, and every item entry decodes; with the bit kept each length is longer than its record | set in 1,024 of 1,024 entries of 783 records; all 140 item entries among them decode | `splits_entries_and_keeps_every_header_word` |
+| 3D text: the four values are a quaternion with the scalar first | Only the first and the last value are ever not zero, which is a turn about Z when the scalar is first; the turn was compared with the end of the stored range at which the stored origin lies | 1,875 of 1,875 are unit quaternions; 1,713 not turned, 157 quarter turns, 5 half turns; 149 of the 149 turned texts of three or more characters have the origin at the end that the row rule gives, and 144 of them tell the rule from its transpose | `a_3d_text_exposes_its_stored_quaternion`: the values come back in stored order; the reader computes nothing from them |
+| Shared-cell instance: the nine matrix values are stored by rows | `origin + M * p` over the vertices of the matched definition was compared with the range that the instance stores, by rows and by columns | 2,376 instances checked; 2,319 matrices cannot tell the order (2,311 fit, 8 do not); of the 57 that can, 47 fit by rows, 0 by columns and 10 neither way | `an_instance_places_a_definition_point_with_its_matrix_by_rows` |
+| Shared-cell definitions: an instance repeats the six range values of its definition, and definitions can share a name | The six values of each instance were compared with those of every definition of that name in the file | 2,874 of 2,953 instances match one definition (one matches two equal ones); 79 name no definition of their file; the checked-in fixture shows one matching pair | `shared_cell_definitions_hold_their_components_in_their_own_space` |
+| Tags: a text byte above `0x7f` is Windows-1252 when the word at `0x13c` is 1252 | The word was read in every tag; the bytes are in the range that Windows-1252 text uses | 1,194 of 1,194 text tags store 1252; 18 values hold such a byte, all from `0xa0` to `0xff` | `decodes_tag_values_of_the_two_observed_types` |
+| Tags: bytes can follow the value, and a text value can be empty | The value length at `0x138` was compared with the primary size in every tag | 10 or 11 bytes follow the value in every text tag of that writer; 674 of 1,194 text values are empty | the same test |
+| Tag sets: a prompt can be empty | The definitions of every tag set were decoded to the declared length | 55 of 671 definitions | `decodes_the_definitions_of_a_tag_set` |
+| Tags: a tag can be a component of a shared-cell definition, can have no host, and can have a shared-cell instance as host | The host linkage of every tag was looked up among the elements of its model | 526 tags in definitions; 1,012 text tags without a host; 182 with a shared-cell instance as host, found in the same model | `tags_are_read_with_their_value_their_set_and_their_host` |
+| Tags: the origin is the sum of the pairs at `0xa0` and `0xb8` | The sum was compared with the stored range of the tag | inside the range in 1,204 of 1,204 tags; for the 182 tags with a host the first pair alone is outside it | `the_placement_is_the_sum_of_the_two_stored_pairs`, `a_tag_origin_is_given_only_inside_the_stored_range` |
 
 ## Deliberately unresolved semantics
 
