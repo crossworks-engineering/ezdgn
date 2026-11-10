@@ -251,3 +251,48 @@ def test_stored_3d_elements_expose_their_quaternion() -> None:
     # the fixture's two 3D texts are not turned: the scalar part comes first
     assert texts == [(1.0, 0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0)]
     assert curves > 0
+
+
+def test_shared_cell_definitions_are_read_on_request() -> None:
+    document = ezdgn.read_v8(V8)
+    (definition,) = ezdgn.read_v8_shared_cell_definitions(V8)
+    assert definition.name == "Named definition"
+    assert [
+        (item.index, item.kind, item.parent_index, item.child_indices)
+        for item in definition.elements
+    ] == [(0, "SHARED_CELL_DEFINITION", None, (1,)), (1, "ELLIPSE", 0, ())]
+    header = definition.header
+    assert header is not None and not header.is_drawable
+    assert header.data.child_count == 1
+    assert definition.range_values == header.data.transform[:6]
+    assert [round(value) for value in definition.range_values or ()] == [-1, -1, 0, 1, 1, 0]
+    # definition space: a circle of radius 1 UOR at the origin, no global origin
+    circle = definition.elements[1].data
+    assert circle.center == ezdgn.V8Point(uor=(0.0, 0.0, 0.0), master=(0.0, 0.0, 0.0))
+    assert (circle.primary_axis_uor, circle.primary_axis_master) == (1.0, 0.0001)
+
+    (instance,) = [
+        item for item in document.models[0].elements if item.kind == "SHARED_CELL_INSTANCE"
+    ]
+    assert definition.matches(instance)
+    assert not definition.matches(definition.elements[1])
+    # origin + M * p for the corners of the circle's box is the stored range
+    origin = instance.data.origin.uor
+    matrix = instance.data.transform[6:]
+    assert matrix == (1e4, 0.0, 0.0, 0.0, 1e4, 0.0, 0.0, 0.0, 1e4)
+    low, high = instance.common.range_uor
+    assert (origin[0] + matrix[0] * -1, origin[1] + matrix[4] * -1) == low[:2]
+    assert (origin[0] + matrix[0] * 1, origin[1] + matrix[4] * 1) == high[:2]
+    # the document itself is unchanged: no definition among its elements
+    assert all(
+        item.kind != "SHARED_CELL_DEFINITION"
+        for model in document.models
+        for item in model.elements
+    )
+
+    with pytest.raises(ezdgn.InvalidDgnError):
+        ezdgn.read_v8_shared_cell_definitions(V8, model_index=1)
+    with pytest.raises(ValueError):
+        ezdgn.read_v8_shared_cell_definitions(V8, model_index=-1)
+    with pytest.raises(ezdgn.UnsupportedDgnError):
+        ezdgn.read_v8_shared_cell_definitions(V7)

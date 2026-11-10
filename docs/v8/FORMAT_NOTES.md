@@ -199,6 +199,7 @@ The decoder maps standard element types as follows:
 | 17 | text |
 | 21 / 27 | B-spline pole sequence / curve header |
 | 22 | point string with per-point orientation |
+| 34 | shared-cell definition header in the named pages: component count, range values, matrix, linked name |
 | 35 | shared-cell instance, origin, transform, linked name when present; the origin is the last three doubles of the record whether or not the 3D flag is set |
 | 36 | bounded dimension anchor |
 
@@ -304,6 +305,57 @@ and the only other weights in that file are explicit 0 and 2. `0x4c` repeated
 the color index on the MicroStation file and was 0 on the DWG conversion;
 `0x28`, `0x2c` and `0x60` vary by file and remain unresolved. Element headers
 use `0xffffffff` (ByLevel) and `0xfffffffe` (ByCell) in their symbology words.
+
+## Shared-cell definitions
+
+A shared-cell definition is a type-34 header object in the named object pages
+(`/Dgn^Nm`), followed by its components: the objects with the component role up
+to the next object that is not a component. The primary part of the header is
+`0x100` bytes in every definition seen:
+
+| Offset | Type | Meaning |
+| ---: | --- | --- |
+| `0x68` | `u32` | declared component count |
+| `0x70` | six `f64` | range of the definition in its own space: low XYZ, then high XYZ |
+| `0xa0` | nine `f64` | a 3x3 matrix by rows; the identity in every definition seen |
+| `0xe8` | three `f64` | zero in every definition seen |
+
+The name is the property linkage with ID 1, as for an instance. The components
+are ordinary graphical objects (lines, shapes, texts, text nodes, arcs,
+ellipses, cells, and shared-cell instances of other definitions) with
+coordinates in the definition's own space.
+
+A type-35 instance repeats its definition in the fifteen values it stores from
+`0x70`: the first six equal the definition's six range values bit for bit, and
+the last nine are a 3x3 matrix `M` by rows. The instance places a definition
+point `p` at `origin + M * p`, in UOR. One file can hold several definitions
+with one name and different ranges, so an instance is matched by the name and
+the six values together.
+
+Evidence:
+
+- The checked-in fixture has one definition, `Named definition`, with one
+  component: a circle of radius 1 UOR at the definition origin, range
+  `(-1, -1, 0)` to `(1, 1, 0)`. Its one instance has `M` = 10,000 times the
+  identity and origin `(0, 1e4, 2e4)`. `origin + M * p` for the range
+  corners gives `(-1e4, 0)` and `(1e4, 2e4)`, the range the instance
+  stores.
+- In 90 real-world files that are not checked in, all 30,757 type-34 headers
+  decode with this layout and every one of their 438,312 components has a
+  parent. Of 2,953 instances, 2,874 match a definition by name and range
+  values (one matches two equal definitions) and 79 have no definition with
+  their name in the file. For the 2,376 matched instances whose definition
+  holds only lines, line strings and shapes, `origin + M * p` over the
+  component vertices reproduces the stored instance range within 1% for 2,358;
+  the other 18 are unresolved.
+- The two public sample files in `PROVENANCE.md` hold no definition.
+
+The reader returns the definitions with their components in definition space.
+It does not copy or transform components into the model, and it does not
+resolve ByCell symbology. A header with another primary size, a type-34 object
+without the header role, and a run whose hierarchy cannot be built are not
+read as definitions and stay raw. The values at `0xa0` and `0xe8` of the
+header, and the 79 instances without a definition, are unresolved.
 
 ## Auxiliary record payload entries
 

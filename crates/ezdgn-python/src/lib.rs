@@ -2,7 +2,8 @@
 
 use ezdgn_core::{
     decode_common_header, decode_design_settings, decode_v8_auxiliary_entries, decode_v8_item_data,
-    detect_format, inspect_v8_container, read_v7_2d, read_v8, scan_records,
+    detect_format, inspect_v8_container, read_v7_2d, read_v8,
+    read_v8_shared_cell_definitions as core_read_v8_shared_cell_definitions, scan_records,
     scan_v8_objects as core_scan_v8_objects, write_v7_2d, CommonElementHeader, DesignSettings,
     DgnError as CoreDgnError, ElementData2D, LinkageData, MasterPoint, Point2, RawPoint,
     RecordScan, ScanOptions, V7Document2D, V7ElementStyle, V7WriteOptions, V8AuxiliaryEntry,
@@ -278,6 +279,40 @@ fn scan_v8_object_records(
 fn read_v8_document(py: Python<'_>, data: &[u8], limits: V8LimitsRow) -> PyResult<Py<PyDict>> {
     let document = read_v8(data, v8_scan_options(&limits)?).map_err(core_error_to_python)?;
     Ok(v8_document_dict(py, &document)?.unbind())
+}
+
+/// Return the shared-cell definitions of a V8 file: each one a name and its
+/// elements (the header first), with every raw object and auxiliary record
+/// inline.
+#[pyfunction]
+fn read_v8_shared_cells(
+    py: Python<'_>,
+    data: &[u8],
+    limits: V8LimitsRow,
+    model_index: usize,
+) -> PyResult<Py<PyList>> {
+    let definitions =
+        core_read_v8_shared_cell_definitions(data, v8_scan_options(&limits)?, model_index)
+            .map_err(core_error_to_python)?;
+    let result = PyList::empty(py);
+    for definition in &definitions {
+        let value = PyDict::new(py);
+        value.set_item("name", &definition.name)?;
+        let elements = PyList::empty(py);
+        for element in &definition.elements {
+            let row = v8_element_dict(py, element)?;
+            row.set_item("raw", v8_raw_object_dict(py, &element.raw)?)?;
+            let auxiliary = PyList::empty(py);
+            for record in &element.auxiliary_records {
+                auxiliary.append(v8_auxiliary_record_dict(py, record)?)?;
+            }
+            row.set_item("auxiliary_records", auxiliary)?;
+            elements.append(row)?;
+        }
+        value.set_item("elements", elements)?;
+        result.append(value)?;
+    }
+    Ok(result.unbind())
 }
 
 /// Split one auxiliary payload into its entries, or return `None` when the
@@ -1000,6 +1035,15 @@ fn v8_element_data_dict<'py>(
             result.set_item("origin", v8_point_row(*origin))?;
             result.set_item("transform", transform)?;
         }
+        V8ElementData::SharedCellDefinition {
+            child_count,
+            name,
+            transform,
+        } => {
+            result.set_item("child_count", *child_count)?;
+            result.set_item("name", name)?;
+            result.set_item("transform", transform)?;
+        }
         V8ElementData::BSplineCurve {
             child_count,
             properties_raw,
@@ -1652,6 +1696,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(inspect_v8_cfb, module)?)?;
     module.add_function(wrap_pyfunction!(scan_v8_object_records, module)?)?;
     module.add_function(wrap_pyfunction!(read_v8_document, module)?)?;
+    module.add_function(wrap_pyfunction!(read_v8_shared_cells, module)?)?;
     module.add_function(wrap_pyfunction!(decode_v8_auxiliary_payload, module)?)?;
     module.add_function(wrap_pyfunction!(decode_v8_item_instance_data, module)?)?;
     module.add(

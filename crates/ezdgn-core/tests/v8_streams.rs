@@ -188,6 +188,79 @@ fn scans_real_model_index_graphics_names_and_auxiliary_records() {
 }
 
 #[test]
+fn the_fixture_shared_cell_instance_finds_and_places_its_definition() {
+    let document = read_v8(V8, V8ScanOptions::default()).unwrap();
+    let definitions = document
+        .shared_cell_definitions(0, V8ScanOptions::default())
+        .unwrap();
+    assert_eq!(definitions.len(), 1);
+    let definition = &definitions[0];
+    assert_eq!(definition.name, "Named definition");
+    assert_eq!(
+        definition
+            .elements
+            .iter()
+            .map(|element| (element.kind(), element.parent_index))
+            .collect::<Vec<_>>(),
+        [("SHARED_CELL_DEFINITION", None), ("ELLIPSE", Some(0))]
+    );
+    // a circle of radius 1 UOR at the definition origin
+    let V8ElementData::Ellipse {
+        center,
+        primary_axis_uor,
+        secondary_axis_uor,
+        primary_axis_master,
+        ..
+    } = &definition.elements[1].data
+    else {
+        panic!("expected an ellipse");
+    };
+    assert_eq!((center.uor.x, center.uor.y, center.uor.z), (0.0, 0.0, 0.0));
+    assert_eq!((*primary_axis_uor, *secondary_axis_uor), (1.0, 1.0));
+    assert_eq!(*primary_axis_master, 0.0001);
+
+    let instances = document.models[0]
+        .elements
+        .iter()
+        .filter(|element| element.kind() == "SHARED_CELL_INSTANCE")
+        .collect::<Vec<_>>();
+    assert_eq!(instances.len(), 1);
+    let instance = instances[0];
+    assert!(definition.matches(&instance.data));
+    let V8ElementData::SharedCellInstance {
+        origin, transform, ..
+    } = &instance.data
+    else {
+        unreachable!();
+    };
+    // The instance scales by 10,000. origin + M * p, applied to the two
+    // corners of the circle's box, gives the range the instance stores.
+    assert_eq!(
+        transform[6..],
+        [1e4, 0.0, 0.0, 0.0, 1e4, 0.0, 0.0, 0.0, 1e4]
+    );
+    let place = |x: f64, y: f64| {
+        (
+            origin.uor.x + transform[6] * x + transform[7] * y,
+            origin.uor.y + transform[9] * x + transform[10] * y,
+        )
+    };
+    let range = instance.common.range_uor;
+    assert_eq!(
+        place(-1.0, -1.0),
+        (range.low[0] as f64, range.low[1] as f64)
+    );
+    assert_eq!(
+        place(1.0, 1.0),
+        (range.high[0] as f64, range.high[1] as f64)
+    );
+    assert!(matches!(
+        document.shared_cell_definitions(1, V8ScanOptions::default()),
+        Err(DgnError::InvalidV8ModelIndex { .. })
+    ));
+}
+
+#[test]
 fn stored_3d_texts_ellipses_and_arcs_expose_a_quaternion() {
     let document = read_v8(V8, V8ScanOptions::default()).unwrap();
     let mut texts = Vec::new();

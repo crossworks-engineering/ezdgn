@@ -36,6 +36,9 @@ The semantic model currently covers:
 - property and unknown linkages with exact bytes;
 - the entries of an auxiliary-record payload with their type word, entry ID
   and exact data;
+- shared-cell definitions from the named object pages, on request, with their
+  components and hierarchy in definition space, and the match of an instance
+  to its definition;
 - item instances on graphical elements: the item class name, the stored root
   attributes, and each property name with its text value, for the one stored
   layout recorded in `FORMAT_NOTES.md`; and
@@ -55,7 +58,9 @@ This milestone does not support:
 - V8 creation, writing, editing, or round-trip serialization;
 - complete dimension annotation semantics;
 - full B-spline knot/weight/surface semantics;
-- shared-cell definition lookup and transformed instance expansion;
+- transformed shared-cell instance expansion (the definitions and the
+  placement rule are available; the reader does not copy components into the
+  model) and ByCell symbology resolution;
 - product-specific custom objects, schema text, typed or converted Item Type
   values, item instance layouts other than the recorded one (nested elements,
   wider counts and lengths), business properties, or other XAttribute payload

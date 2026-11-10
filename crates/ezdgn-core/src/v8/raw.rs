@@ -1107,6 +1107,17 @@ pub(crate) mod test_support {
         objects: &[Vec<u8>],
         auxiliary: &[Vec<u8>],
     ) -> Vec<u8> {
+        dgn_with_pages(model_header, objects, auxiliary, &[])
+    }
+
+    /// Like [`dgn_with_objects_and_auxiliary`], with one named object page
+    /// that holds `named` objects when the slice is not empty.
+    pub(crate) fn dgn_with_pages(
+        model_header: &[u8],
+        objects: &[Vec<u8>],
+        auxiliary: &[Vec<u8>],
+        named: &[Vec<u8>],
+    ) -> Vec<u8> {
         let cursor = Cursor::new(Vec::new());
         let mut cfb = cfb::CompoundFile::create_with_version(cfb::Version::V3, cursor).unwrap();
         for storage in [
@@ -1116,6 +1127,24 @@ pub(crate) mod test_support {
             "/Dgn^Ix",
         ] {
             cfb.create_storage(storage).unwrap();
+        }
+        if !named.is_empty() {
+            cfb.create_storage("/Dgn^Nm").unwrap();
+            let count = u32::try_from(named.len()).unwrap();
+            let mut inflated = Vec::new();
+            for object in named {
+                inflated.extend(0_u32.to_le_bytes());
+                inflated.extend(object);
+            }
+            let mut page = Vec::new();
+            page.extend(count.to_le_bytes());
+            page.extend(2_u32.to_le_bytes());
+            page.extend(1_u32.to_le_bytes());
+            page.extend(count.to_le_bytes());
+            page.extend(zlib(&inflated));
+            let mut page_stream = cfb.create_stream("/Dgn^Nm/$1").unwrap();
+            page_stream.write_all(&page).unwrap();
+            drop(page_stream);
         }
         if !auxiliary.is_empty() {
             cfb.create_storage("/Dgn-Md/#000000/Dgn^GA").unwrap();
