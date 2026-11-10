@@ -207,6 +207,43 @@ def test_tag_sets_of_a_document_are_decoded_on_request() -> None:
     assert with_sets.tag_set(None) is None
 
 
+def test_one_tag_set_lookup_decodes_at_most_one_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = ezdgn.read_v8(V8)
+    sets = tuple(
+        _named_object(300 + index, _primary(DEFINITIONS), _name_linkage(b"Grove"))
+        for index in range(5)
+    )
+    page = document.raw.named_pages[0]
+    with_sets = replace(
+        document,
+        raw=replace(document.raw, named_pages=(replace(page, objects=sets),)),
+    )
+    decoded: list[int | None] = []
+    real = ezdgn.v8.decode_tag_set
+
+    def counting(item: ezdgn.V8RawObject) -> ezdgn.V8TagSet | None:
+        decoded.append(item.element_id)
+        return real(item)
+
+    monkeypatch.setattr(ezdgn.v8, "decode_tag_set", counting)
+    # one lookup decodes the one set it returns and nothing else
+    assert with_sets.tag_set(303) == replace(EXPECTED, element_id=303)
+    assert decoded == [303]
+    # an ID that no tag set has, and a tag without a tag set: nothing decoded
+    decoded.clear()
+    assert with_sets.tag_set(999) is None
+    assert with_sets.tag_set(None) is None
+    assert decoded == []
+
+    # the mapping for the tags of a whole model: every set, decoded once
+    by_id = with_sets.tag_sets_by_id()
+    assert sorted(by_id) == [300, 301, 302, 303, 304]
+    assert by_id[302] == replace(EXPECTED, element_id=302)
+    assert by_id.get(999) is None
+
+
 def test_tag_set_decoding_is_bounded() -> None:
     assert V8_MAX_TAG_SET_BYTES == 1_048_576
 

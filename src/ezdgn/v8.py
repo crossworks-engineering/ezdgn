@@ -933,16 +933,47 @@ class V8Document:
 
     @property
     def tag_sets(self) -> tuple[V8TagSet, ...]:
-        """The tag sets of the document, decoded on each access."""
+        """The tag sets of the document, decoded on each access.
+
+        Every access decodes every tag set again, so read it once and keep
+        the result. ``tag_sets_by_id()`` gives the same sets as a mapping.
+        """
 
         return tag_sets(self.raw)
 
-    def tag_set(self, element_id: int | None) -> V8TagSet | None:
-        """The tag set a tag's ``tag_set_element_id`` refers to, if decodable."""
+    def tag_sets_by_id(self) -> dict[int, V8TagSet]:
+        """The decodable tag sets by element ID, for the lookup of many tags.
 
+        One call decodes every tag set once, like ``tag_sets``. Keep the
+        mapping and look each tag up with
+        ``mapping.get(element.data.tag_set_element_id)``.
+        """
+
+        result: dict[int, V8TagSet] = {}
         for item in self.tag_sets:
-            if item.element_id == element_id:
-                return item
+            result.setdefault(item.element_id, item)
+        return result
+
+    def tag_set(self, element_id: int | None) -> V8TagSet | None:
+        """The tag set a tag's ``tag_set_element_id`` refers to, if decodable.
+
+        One call walks the named objects once and decodes at most one tag
+        set: the first tag-set object with this element ID. It does not
+        decode the other sets, and nothing is kept between calls. To look up
+        the sets of many tags, build the mapping once with
+        ``tag_sets_by_id()`` and do not call this for each tag.
+        """
+
+        if element_id is None:
+            return None
+        for page in self.raw.named_pages:
+            for item in page.objects:
+                if (
+                    item.element_id == element_id
+                    and item.element_type == TAG_SET_ELEMENT_TYPE
+                    and item.primary_bytes[0x28:0x30] == V8_TAG_SET_CODE
+                ):
+                    return decode_tag_set(item)
         return None
 
     def __iter__(self) -> Iterator[V8Model]:

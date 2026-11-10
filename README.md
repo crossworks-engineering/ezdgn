@@ -281,7 +281,7 @@ A tag is a `TAG` element. It is not part of `entities`; find tags in
 `model.elements`:
 
 ```python
-tag_sets = {tag_set.element_id: tag_set for tag_set in document.tag_sets}
+tag_sets = document.tag_sets_by_id()
 for element in document.models[0].elements:
     if element.kind == "TAG":
         data = element.data
@@ -299,7 +299,11 @@ the stored range of the tag. `document.tag_sets` decodes the tag sets when it
 is read (`V8TagSet`: `name`, `element_id` and the `definitions` with their
 `name`, `tag_id`, `prompt`, `value_type` and `default`); a tag set that does
 not match the recorded layout is not listed and stays among
-`ezdgn.v8.tag_set_objects(document.raw)`. Only tags stored as 2D are decoded.
+`ezdgn.v8.tag_set_objects(document.raw)`. Each read of `document.tag_sets`
+and each call of `document.tag_sets_by_id()` decodes every tag set again, so
+keep the result. `document.tag_set(element_id)` decodes one tag set on each
+call; use the mapping for the tags of a whole model. Only tags stored as 2D
+are decoded.
 
 Malformed structure raises `InvalidDgnError`; configured resource ceilings
 raise `DgnLimitError`. The complete clean-room boundary, evidence ledger, and
