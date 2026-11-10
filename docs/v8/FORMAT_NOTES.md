@@ -213,6 +213,20 @@ more. The semantic model retains both raw multipliers and both converted
 distances. This conversion reproduces the checked-in GDAL oracle's
 `s:1.000000g` labels and the independently observed public text-node fixture.
 
+A stored-3D type-17 text holds two finite `f64` values at `0x80` and `0x88`,
+a unit quaternion in scalar-first order `(w, x, y, z)` at `0x90`, and its
+origin at `0xb0`. The six values from `0x80` are kept together as the text's
+`orientation`; `quaternion` returns the last four. The two 3D texts of the
+checked-in fixture hold `(1, 0, 0, 0)`. In five real-world files that are not
+checked in, all 1,875 3D texts hold a unit quaternion there and 162 are turned
+about Z. For the 149 turned texts of three or more characters, the local X axis
+given by the first row of the quaternion's rotation matrix, the rule the V7
+reader uses for 3D elements, points from the stored origin along the stored
+range: up for 140, down for 4 and left for 5. Only those files exercise a
+turned text; the meaning of the two values at `0x80` and `0x88` is unresolved.
+The reader returns the quaternion as stored and does not turn it into an
+angle.
+
 The type-17 text payload starts right after the fixed header (editable-field
 word at `0xa8` for 2D, `0xc8` for 3D; payload at `0xaa` / `0xca`), its byte
 length being the `u16` at `0x6e`. The object may be padded to an even or a
