@@ -486,7 +486,9 @@ impl V8SharedCellDefinition {
 /// A definition is a type-34 header in the named object pages followed by
 /// its components. `metadata` supplies the unit scale for the master values.
 /// A run that does not decode as a definition is skipped and stays raw;
-/// resource-limit errors are returned.
+/// resource-limit errors are returned. Components that follow after the
+/// declared child counts are used up belong to no header: they are not part
+/// of the definition and stay raw.
 pub fn decode_v8_shared_cell_definitions(
     raw: &V8RawDocument,
     metadata: &V8ModelMetadata,
@@ -532,7 +534,16 @@ pub fn decode_v8_shared_cell_definitions(
             &mut auxiliary,
             ObjectPages::Named,
         ) {
-            Ok(elements) => {
+            Ok(mut elements) => {
+                // Once every declared child is placed, a further component
+                // has no parent. It and what follows are not components of
+                // this definition.
+                let members = elements
+                    .iter()
+                    .skip(1)
+                    .position(|element| element.parent_index.is_none())
+                    .map_or(elements.len(), |orphan| orphan + 1);
+                elements.truncate(members);
                 if let Some(V8ElementData::SharedCellDefinition { name, .. }) =
                     elements.first().map(|element| &element.data)
                 {
@@ -2451,6 +2462,73 @@ mod tests {
         );
         assert_eq!(elements[0].child_indices, [1]);
         assert_eq!(elements[1].parent_index, Some(0));
+    }
+
+    #[test]
+    fn components_after_the_declared_count_are_not_part_of_the_definition() {
+        // A text node header that is itself a component, with two children.
+        let nested_header = |id: u64, children: u32| {
+            let mut record = vec![0; 0x80];
+            write_u32(&mut record, 0, 0x7000_0007);
+            write_u32(&mut record, 4, 0x40);
+            write_u32(&mut record, 8, 0x40);
+            write_u32(&mut record, 0x0c, 64);
+            write_u64(&mut record, 0x10, id);
+            write_u64(&mut record, 0x18, MODEL_ID);
+            write_u32(&mut record, 0x68, children);
+            record
+        };
+        let line = |id: u64| line_component(id, [0.0, 0.0], [1.0, 1.0]);
+        let named = [
+            // one child declared, three components stored
+            definition_header(20, "ONE", 1, SMALL),
+            line(21),
+            line(22),
+            line(23),
+            other_named_object(30),
+            // two children declared: a line and a header with its own two
+            // children; then a header and a line that no count covers
+            definition_header(40, "NESTED", 2, SMALL),
+            line(41),
+            nested_header(42, 2),
+            line(43),
+            line(44),
+            nested_header(45, 1),
+            line(46),
+            // the next definition is not affected
+            definition_header(50, "NEXT", 1, SMALL),
+            line(51),
+        ];
+        let dgn = dgn_with_pages(&model_header(), &[], &[], &named);
+        let definitions =
+            read_v8_shared_cell_definitions(&dgn, V8ScanOptions::default(), 0).unwrap();
+        let members = |definition: &V8SharedCellDefinition| {
+            definition
+                .elements
+                .iter()
+                .map(|element| (element.common.element_id, element.parent_index))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(definitions.len(), 3);
+        assert_eq!(members(&definitions[0]), [(20, None), (21, Some(0))]);
+        assert_eq!(
+            members(&definitions[1]),
+            [
+                (40, None),
+                (41, Some(0)),
+                (42, Some(0)),
+                (43, Some(2)),
+                (44, Some(2))
+            ]
+        );
+        assert_eq!(definitions[1].elements[2].child_indices, [3, 4]);
+        assert_eq!(members(&definitions[2]), [(50, None), (51, Some(0))]);
+        // every listed element but the header has a parent in the list
+        for definition in &definitions {
+            assert!(definition.elements[1..]
+                .iter()
+                .all(|element| element.parent_index.is_some()));
+        }
     }
 
     #[test]

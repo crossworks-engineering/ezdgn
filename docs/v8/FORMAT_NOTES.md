@@ -363,7 +363,10 @@ read as definitions and stay raw. A value among the fifteen that is not
 finite also leaves the run raw; it is not an error. Definitions are read only
 from the named pages: a type-34 header in the graphical pages of a model is
 the unknown complex element with its child count that it was before
-definitions were read, whatever its values are. The values at `0xa0` and `0xe8` of the
+definitions were read, whatever its values are. A component that follows
+after the declared child counts of the run are used up has no parent; it and
+the components after it are not listed with the definition and stay raw. No
+definition seen holds such a component. The values at `0xa0` and `0xe8` of the
 header, and the 79 instances without a definition, are unresolved.
 
 ## Auxiliary record payload entries
