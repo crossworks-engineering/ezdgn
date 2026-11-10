@@ -2551,6 +2551,47 @@ mod tests {
     }
 
     #[test]
+    fn a_definition_can_hold_an_instance_of_another_definition() {
+        // the nested instance is a component: the same record with that role
+        let mut nested = named_instance("INNER", SMALL, IDENTITY, [100.0, 50.0, 0.0]);
+        write_u32(&mut nested, 0, 0x5000_0023);
+        let named = [
+            definition_header(20, "OUTER", 2, LARGE),
+            line_component(21, [0.0, 0.0], [4000.0, 3000.0]),
+            nested,
+            definition_header(30, "INNER", 1, SMALL),
+            line_component(31, [0.0, 0.0], [2000.0, 1000.0]),
+        ];
+        let dgn = dgn_with_pages(&model_header(), &[], &[], &named);
+        let definitions =
+            read_v8_shared_cell_definitions(&dgn, V8ScanOptions::default(), 0).unwrap();
+        assert_eq!(definitions.len(), 2);
+        let outer = &definitions[0];
+        assert_eq!(
+            outer
+                .elements
+                .iter()
+                .map(|element| (element.kind(), element.parent_index))
+                .collect::<Vec<_>>(),
+            [
+                ("SHARED_CELL_DEFINITION", None),
+                ("LINE", Some(0)),
+                ("SHARED_CELL_INSTANCE", Some(0))
+            ]
+        );
+        // The nested instance finds its own definition and places a point
+        // of it in the space of the outer definition. The reader does not
+        // expand it.
+        let instance = &outer.elements[2].data;
+        assert!(definitions[1].matches(instance));
+        assert!(!outer.matches(instance));
+        let placed = instance
+            .place_definition_point(V8Point3::new(2000.0, 1000.0, 0.0))
+            .unwrap();
+        assert_eq!((placed.x, placed.y, placed.z), (2100.0, 1050.0, 0.0));
+    }
+
+    #[test]
     fn components_after_the_declared_count_are_not_part_of_the_definition() {
         // A text node header that is itself a component, with two children.
         let nested_header = |id: u64, children: u32| {
