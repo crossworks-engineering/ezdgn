@@ -271,7 +271,10 @@ type conversion is applied. The underlying auxiliary record is split into
 entry whose bytes do not match the one recorded layout is not decoded and
 keeps its raw bytes; this is never an error. In Python both are decoded when
 they are read, not when the document is loaded, so keep the result when you
-need it more than once.
+need it more than once. One read of `element.item_instances` returns at most
+`ezdgn.v8.V8_MAX_ITEM_BYTES` decoded bytes;
+`ezdgn.v8.decode_item_instances(element.auxiliary_records)` returns the same
+instances and the number of item entries that this limit left raw.
 
 A tag is a `TAG` element. It is not part of `entities`; find tags in
 `model.elements`:

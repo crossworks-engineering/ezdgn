@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::DgnError;
 
-use super::item::{decode_v8_item_instance, V8ItemInstance};
+use super::item::{decode_v8_item_instances, V8ItemInstance, V8ItemInstances};
 use super::linkage::{decode_v8_linkages, decode_windows_1252, V8Linkage};
 use super::metadata::{
     decode_model_metadata, read_f64, read_i64, V8Dimension, V8ModelMetadata, V8Point3, V8Range3,
@@ -348,15 +348,25 @@ impl V8Element {
     ///
     /// They are decoded on each call and are not stored with the element. An
     /// entry that does not match the observed layout is not listed and stays
-    /// available through `auxiliary_records`.
+    /// available through `auxiliary_records`. One call returns at most
+    /// [`V8_MAX_ITEM_BYTES`](super::V8_MAX_ITEM_BYTES) decoded bytes; use
+    /// [`Self::decode_item_instances`] to learn whether that limit left an
+    /// entry out.
     #[must_use]
     pub fn item_instances(&self) -> Vec<V8ItemInstance> {
-        self.auxiliary_records
-            .iter()
-            .filter_map(V8AuxiliaryRecord::entries)
-            .flatten()
-            .filter_map(|entry| decode_v8_item_instance(&entry))
-            .collect()
+        self.decode_item_instances().instances
+    }
+
+    /// The item instances of [`Self::item_instances`] together with the
+    /// number of item entries that the size limit of one call left raw.
+    #[must_use]
+    pub fn decode_item_instances(&self) -> V8ItemInstances {
+        decode_v8_item_instances(
+            self.auxiliary_records
+                .iter()
+                .filter_map(V8AuxiliaryRecord::entries)
+                .flatten(),
+        )
     }
 }
 
@@ -1885,6 +1895,47 @@ mod tests {
             (2, "History")
         );
         assert_eq!(items[1].property("Installed"), Some("1986-01-01"));
+    }
+
+    #[test]
+    fn item_data_over_the_size_limit_stays_raw_and_is_counted() {
+        // One table string of 127 three-byte characters; every attribute
+        // pair is four stored bytes that ask for two copies of it.
+        let long = "\u{3042}".repeat(127);
+        // enough pairs for more than half of the limit in text alone
+        let pairs = crate::v8::V8_MAX_ITEM_BYTES / (4 * long.len()) + 1;
+        let attributes = vec![(long.as_str(), long.as_str()); pairs];
+        let large = item_data(900, &long, &attributes, &[]);
+        let small = item_data(900, "Pump", &ITEM_ATTRIBUTES, &[("Tag", "P-101")]);
+        let record = auxiliary_record(
+            SHARED_CELL_ELEMENT_ID,
+            3,
+            &payload(&[
+                entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, true, &large),
+                entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 2, true, &large),
+                entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 3, true, &small),
+            ]),
+        );
+        assert!(record.len() < 16 * 1024);
+        // the file is read, and the record keeps its exact bytes
+        let document = read_with_auxiliary(std::slice::from_ref(&record));
+        let element = &document.models[0].elements[0];
+        assert_eq!(element.kind(), "SHARED_CELL_INSTANCE");
+        assert_eq!(element.auxiliary_records[0].as_bytes(), record.as_slice());
+        assert_eq!(element.auxiliary_records[0].entries().unwrap().len(), 3);
+
+        let decoded = element.decode_item_instances();
+        assert_eq!(decoded.instances.len(), 1);
+        assert_eq!(decoded.instances[0].entry_id, 1);
+        assert_eq!(decoded.over_limit, 2);
+        assert_eq!(element.item_instances(), decoded.instances);
+        let text_bytes = decoded.instances[0]
+            .attributes
+            .iter()
+            .map(|pair| pair.name.len() + pair.value.len())
+            .sum::<usize>();
+        assert_eq!(text_bytes, pairs * 2 * long.len());
+        assert!(text_bytes <= crate::v8::V8_MAX_ITEM_BYTES);
     }
 
     #[test]

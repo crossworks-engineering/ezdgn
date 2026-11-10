@@ -25,8 +25,8 @@ pub use entity::{
     V8SharedCellDefinition, V8TextEncoding,
 };
 pub use item::{
-    decode_v8_item_data, decode_v8_item_instance, V8ItemInstance, V8ItemValue,
-    V8_ITEM_INSTANCE_ENTRY_TYPE,
+    decode_v8_item_data, decode_v8_item_instance, decode_v8_item_instances, V8ItemInstance,
+    V8ItemInstances, V8ItemValue, V8_ITEM_INSTANCE_ENTRY_TYPE, V8_MAX_ITEM_BYTES,
 };
 pub use linkage::{decode_v8_linkages, V8Linkage, V8_PROPERTY_LINKAGE_KIND};
 pub use metadata::{V8Dimension, V8ModelMetadata, V8Point3, V8Range3, V8Range3I64};

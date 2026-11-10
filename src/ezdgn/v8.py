@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Iterator, Literal, TypeAlias, cast
+from typing import Any, Iterable, Iterator, Literal, TypeAlias, cast
 
 from ._core import (
     DEFAULT_MAX_CFB_ENTRIES,
@@ -20,6 +20,7 @@ from ._core import (
     DEFAULT_MAX_V8_TOTAL_INFLATED_BYTES,
     DEFAULT_MAX_V8_VERTICES,
     V8_ITEM_INSTANCE_ENTRY_TYPE,
+    V8_MAX_ITEM_BYTES,
     V8_MAX_TAG_SET_BYTES,
     V8_TAG_SET_CODE,
     V8_TAG_VALUE_INTEGER,
@@ -28,6 +29,7 @@ from ._core import (
 )
 from ._core import decode_v8_auxiliary_payload as _decode_v8_auxiliary_payload
 from ._core import decode_v8_item_instance_data as _decode_v8_item_instance_data
+from ._core import decode_v8_item_instances_data as _decode_v8_item_instances_data
 from ._core import decode_v8_tag_set_data as _decode_v8_tag_set_data
 from ._core import inspect_v8_cfb as _inspect_v8_cfb
 from ._core import read_v8_document as _read_v8_document
@@ -256,6 +258,19 @@ class V8ItemInstance:
         for key, value in self.properties:
             result.setdefault(key, value)
         return result
+
+
+@dataclass(frozen=True, slots=True)
+class V8ItemInstances:
+    """The item instances of one call, and what the size limit left raw.
+
+    ``over_limit`` is the number of item entries that were not decoded because
+    the call reached ``V8_MAX_ITEM_BYTES``: the first entry that did not fit
+    and every item entry after it. They stay raw in their records.
+    """
+
+    instances: tuple[V8ItemInstance, ...]
+    over_limit: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -490,15 +505,15 @@ class V8Element:
 
         They are decoded from ``auxiliary_records`` on each access. An entry
         that does not match the observed layout is not listed; it stays
-        available through the entries of its record.
+        available through the entries of its record. One access returns at
+        most ``V8_MAX_ITEM_BYTES`` decoded bytes;
+        ``decode_item_instances(element.auxiliary_records)`` also tells how
+        many item entries that limit left out.
         """
 
-        return tuple(
-            item
-            for record in self.auxiliary_records
-            for entry in record.entries or ()
-            if (item := decode_item_instance(entry)) is not None
-        )
+        if not self.auxiliary_records:
+            return ()
+        return decode_item_instances(self.auxiliary_records).instances
 
     @property
     def kind(self) -> str:
@@ -1126,14 +1141,44 @@ def decode_auxiliary_entries(
 def decode_item_instance(entry: V8AuxiliaryEntry) -> V8ItemInstance | None:
     """Decode an entry of type ``V8_ITEM_INSTANCE_ENTRY_TYPE``.
 
-    Returns ``None`` for another entry type and for data that does not match
-    the observed layout exactly; the entry keeps its raw ``data`` either way.
+    Returns ``None`` for another entry type, for data that does not match the
+    observed layout exactly, and for an instance of more than
+    ``V8_MAX_ITEM_BYTES`` decoded bytes; the entry keeps its raw ``data`` in
+    every case.
     """
 
     if entry.type_id != V8_ITEM_INSTANCE_ENTRY_TYPE:
         return None
     row = _decode_v8_item_instance_data(entry.entry_id, entry.data)
     return None if row is None else _item_instance_from_core(cast("dict[str, Any]", row))
+
+
+def decode_item_instances(records: Iterable[V8AuxiliaryRecord]) -> V8ItemInstances:
+    """Decode the item instances of the auxiliary records of one element.
+
+    The instances are in stored order. An entry of another type, an item
+    entry that does not match the observed layout and a record whose payload
+    does not split into entries are not listed. Each name and value is a copy
+    of a string-table entry that the stored data can ask for any number of
+    times, so one call returns at most ``V8_MAX_ITEM_BYTES`` decoded bytes
+    (the UTF-8 length of every returned string plus a fixed cost for each).
+    The first item entry that would pass that sum ends the decoding; it and
+    the item entries after it are counted in ``over_limit`` and stay raw.
+    """
+
+    rows, over_limit = _decode_v8_item_instances_data(
+        [
+            (bytes(record.payload), record.flags)
+            for record in records
+            if 0 <= record.flags <= 0xFFFF_FFFF
+        ]
+    )
+    return V8ItemInstances(
+        instances=tuple(
+            _item_instance_from_core(cast("dict[str, Any]", row)) for row in rows
+        ),
+        over_limit=over_limit,
+    )
 
 
 def _aux_page_from_core(row: dict[str, Any]) -> V8AuxiliaryPage:
@@ -1387,6 +1432,7 @@ __all__ = [
     "V8Element",
     "V8ElementData",
     "V8ItemInstance",
+    "V8ItemInstances",
     "V8Level",
     "V8Linkage",
     "V8MeshFace",
@@ -1411,12 +1457,14 @@ __all__ = [
     "SYMBOLOGY_BY_LEVEL",
     "TAG_SET_ELEMENT_TYPE",
     "V8_ITEM_INSTANCE_ENTRY_TYPE",
+    "V8_MAX_ITEM_BYTES",
     "V8_MAX_TAG_SET_BYTES",
     "V8_TAG_SET_CODE",
     "V8_TAG_VALUE_INTEGER",
     "V8_TAG_VALUE_TEXT",
     "decode_auxiliary_entries",
     "decode_item_instance",
+    "decode_item_instances",
     "decode_tag_set",
     "inspect_v8_container",
     "level_table",

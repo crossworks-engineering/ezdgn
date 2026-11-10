@@ -40,6 +40,7 @@ from . import (
     read_v8,
 )
 from .metadata import CommonElementHeader, DesignSettings
+from .v8 import decode_item_instances
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -314,7 +315,8 @@ def _inspect_v8(
                         }
                         for auxiliary in element.auxiliary_records
                     ]
-                    if element.item_instances:
+                    items = decode_item_instances(element.auxiliary_records)
+                    if items.instances:
                         record["item_instances"] = [
                             {
                                 "entry_id": item.entry_id,
@@ -323,8 +325,10 @@ def _inspect_v8(
                                 "attributes": [list(pair) for pair in item.attributes],
                                 "properties": [list(pair) for pair in item.properties],
                             }
-                            for item in element.item_instances
+                            for item in items.instances
                         ]
+                    if items.over_limit:
+                        record["item_entries_over_limit"] = items.over_limit
                 records.append(record)
             payload["records"] = records
         models.append(payload)

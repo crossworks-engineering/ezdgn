@@ -492,7 +492,17 @@ The decoder accepts only what was observed and decodes nothing else:
 - a string tag other than `fa` and `fb`, invalid UTF-16, a string number
   outside the table, any other token, a root without attributes, a property
   without exactly one value, a nested element, or any byte after the closing
-  token leaves the entry undecoded.
+  token leaves the entry undecoded;
+- the decoded size is held to a limit. Every name and value is a copy of a
+  string-table entry, and a two-byte reference can ask for a copy of a long
+  entry any number of times: one attribute is four stored bytes and can ask
+  for 762 bytes of text. One call therefore returns at most 1,048,576 decoded
+  bytes, counted as the UTF-8 length of every returned string plus the size of
+  a `String` for each. That holds for one entry decoded alone and for one
+  call that decodes all entries of one element. The first entry that would
+  pass that sum is not decoded, no item entry after it is decoded in that
+  call, and the call reports how many item entries it left raw. The largest
+  sum seen for one element is 1,105 (684 in the public file).
 
 An undecoded entry is not an error: the element is read as before and the
 entry keeps its exact bytes. The schema text of the type-39 object is not

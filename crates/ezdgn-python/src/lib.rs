@@ -2,15 +2,16 @@
 
 use ezdgn_core::{
     decode_common_header, decode_design_settings, decode_v8_auxiliary_entries, decode_v8_item_data,
-    decode_v8_tag_set_data as core_decode_v8_tag_set_data, detect_format, inspect_v8_container,
-    read_v7_2d, read_v8, read_v8_shared_cell_definitions as core_read_v8_shared_cell_definitions,
-    scan_records, scan_v8_objects as core_scan_v8_objects, write_v7_2d, CommonElementHeader,
-    DesignSettings, DgnError as CoreDgnError, ElementData2D, LinkageData, MasterPoint, Point2,
-    RawPoint, RecordScan, ScanOptions, V7Document2D, V7ElementStyle, V7WriteOptions,
-    V8AuxiliaryEntry, V8AuxiliaryPage, V8AuxiliaryRecord, V8CommonHeader, V8Document, V8Element,
-    V8ElementData, V8ItemInstance, V8ItemValue, V8Linkage, V8ModelMetadata, V8ObjectPage,
-    V8ObjectRole, V8Point, V8Range3, V8Range3I64, V8RawDocument, V8RawObject, V8ReadOptions,
-    V8ScanOptions, V8TagValue, WritableElement2D,
+    decode_v8_item_instances, decode_v8_tag_set_data as core_decode_v8_tag_set_data, detect_format,
+    inspect_v8_container, read_v7_2d, read_v8,
+    read_v8_shared_cell_definitions as core_read_v8_shared_cell_definitions, scan_records,
+    scan_v8_objects as core_scan_v8_objects, write_v7_2d, CommonElementHeader, DesignSettings,
+    DgnError as CoreDgnError, ElementData2D, LinkageData, MasterPoint, Point2, RawPoint,
+    RecordScan, ScanOptions, V7Document2D, V7ElementStyle, V7WriteOptions, V8AuxiliaryEntry,
+    V8AuxiliaryPage, V8AuxiliaryRecord, V8CommonHeader, V8Document, V8Element, V8ElementData,
+    V8ItemInstance, V8ItemValue, V8Linkage, V8ModelMetadata, V8ObjectPage, V8ObjectRole, V8Point,
+    V8Range3, V8Range3I64, V8RawDocument, V8RawObject, V8ReadOptions, V8ScanOptions, V8TagValue,
+    WritableElement2D,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
@@ -339,6 +340,27 @@ fn decode_v8_item_instance_data(
     decode_v8_item_data(entry_id, data)
         .map(|item| Ok(v8_item_instance_dict(py, &item)?.unbind()))
         .transpose()
+}
+
+/// Decode the item instances of the auxiliary payloads of one element. Each
+/// payload comes with its declared entry count. Returns the instances and
+/// the number of item entries that the size limit of one call left raw.
+#[pyfunction]
+fn decode_v8_item_instances_data(
+    py: Python<'_>,
+    payloads: Vec<(Bound<'_, PyBytes>, u32)>,
+) -> PyResult<(Py<PyList>, usize)> {
+    let decoded = decode_v8_item_instances(
+        payloads
+            .iter()
+            .filter_map(|(payload, count)| decode_v8_auxiliary_entries(payload.as_bytes(), *count))
+            .flatten(),
+    );
+    let result = PyList::empty(py);
+    for item in &decoded.instances {
+        result.append(v8_item_instance_dict(py, item)?)?;
+    }
+    Ok((result.unbind(), decoded.over_limit))
 }
 
 /// Decode a tag set from the primary and attribute bytes of its named
@@ -1760,6 +1782,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(read_v8_shared_cells, module)?)?;
     module.add_function(wrap_pyfunction!(decode_v8_auxiliary_payload, module)?)?;
     module.add_function(wrap_pyfunction!(decode_v8_item_instance_data, module)?)?;
+    module.add_function(wrap_pyfunction!(decode_v8_item_instances_data, module)?)?;
     module.add_function(wrap_pyfunction!(decode_v8_tag_set_data, module)?)?;
     module.add(
         "V8_ITEM_INSTANCE_ENTRY_TYPE",
@@ -1769,6 +1792,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "V8_TAG_SET_CODE",
         PyBytes::new(py, &ezdgn_core::V8_TAG_SET_CODE),
     )?;
+    module.add("V8_MAX_ITEM_BYTES", ezdgn_core::V8_MAX_ITEM_BYTES)?;
     module.add("V8_MAX_TAG_SET_BYTES", ezdgn_core::V8_MAX_TAG_SET_BYTES)?;
     module.add("V8_TAG_VALUE_TEXT", ezdgn_core::V8_TAG_VALUE_TEXT)?;
     module.add("V8_TAG_VALUE_INTEGER", ezdgn_core::V8_TAG_VALUE_INTEGER)?;

@@ -4,6 +4,19 @@ use super::raw::read_u32;
 /// Type word of the auxiliary entries that hold one item instance.
 pub const V8_ITEM_INSTANCE_ENTRY_TYPE: u32 = 0x56ff_0000;
 
+/// Most decoded bytes that one call returns as item instances.
+///
+/// The class name, every name and every value of an instance is a copy of a
+/// string-table entry, and a two-byte reference can ask for a copy of a long
+/// entry any number of times. Each copy is therefore charged with its UTF-8
+/// length plus the size of a `String`, and a call that would pass this sum
+/// leaves the entry raw. The largest sum seen for one element is 1,105.
+pub const V8_MAX_ITEM_BYTES: usize = 1024 * 1024;
+
+/// What a returned string costs besides its text, so that a reference to an
+/// empty string is not free.
+const STRING_COST: usize = std::mem::size_of::<String>();
+
 const HEAD: [u8; 5] = [0x00, 0x00, 0x01, 0x01, 0x15];
 const SCHEMA_ID_OFFSET: usize = HEAD.len();
 const SIGNATURE_OFFSET: usize = SCHEMA_ID_OFFSET + 4;
@@ -81,10 +94,53 @@ fn first_value<'a>(values: &'a [V8ItemValue], name: &str) -> Option<&'a str> {
         .map(|item| item.value.as_str())
 }
 
+/// The item instances of one call, and what the limit left raw.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct V8ItemInstances {
+    /// The decoded instances in stored order.
+    pub instances: Vec<V8ItemInstance>,
+    /// Item entries that were not decoded because the call reached
+    /// [`V8_MAX_ITEM_BYTES`]: the first entry that did not fit and every
+    /// item entry after it. They stay raw in their records.
+    pub over_limit: usize,
+}
+
+/// Decode the item instances among `entries`, in stored order.
+///
+/// An entry of another type, and an item entry that does not match the
+/// observed layout, is not listed. One call returns at most
+/// [`V8_MAX_ITEM_BYTES`] decoded bytes: the first item entry that would pass
+/// that sum ends the decoding, and it and the item entries after it are
+/// counted in `over_limit`. This is not an error.
+#[must_use]
+pub fn decode_v8_item_instances(
+    entries: impl IntoIterator<Item = V8AuxiliaryEntry>,
+) -> V8ItemInstances {
+    let mut budget = V8_MAX_ITEM_BYTES;
+    let mut result = V8ItemInstances::default();
+    for entry in entries {
+        if entry.type_id != V8_ITEM_INSTANCE_ENTRY_TYPE {
+            continue;
+        }
+        if result.over_limit > 0 {
+            result.over_limit += 1;
+            continue;
+        }
+        match decode_within(entry.entry_id, entry.data(), &mut budget) {
+            Decoded::Instance(item) => result.instances.push(item),
+            Decoded::OverLimit => result.over_limit = 1,
+            Decoded::Raw => {}
+        }
+    }
+    result
+}
+
 /// Decode an auxiliary entry of type [`V8_ITEM_INSTANCE_ENTRY_TYPE`].
 ///
-/// Returns `None` for another entry type and for data that does not match
-/// the observed layout exactly. The entry keeps its raw bytes in both cases.
+/// Returns `None` for another entry type, for data that does not match the
+/// observed layout exactly, and for an instance of more than
+/// [`V8_MAX_ITEM_BYTES`] decoded bytes. The entry keeps its raw bytes in
+/// every case.
 #[must_use]
 pub fn decode_v8_item_instance(entry: &V8AuxiliaryEntry) -> Option<V8ItemInstance> {
     if entry.type_id != V8_ITEM_INSTANCE_ENTRY_TYPE {
@@ -98,9 +154,46 @@ pub fn decode_v8_item_instance(entry: &V8AuxiliaryEntry) -> Option<V8ItemInstanc
 /// The decoder accepts only the observed layout: the fixed head and
 /// signature, a string table of at most 127 strings of at most 127 units,
 /// and the token sequence root, attributes, content mark, properties, end.
-/// Every string number must exist and every byte must be consumed.
+/// Every string number must exist and every byte must be consumed. An
+/// instance of more than [`V8_MAX_ITEM_BYTES`] decoded bytes is not decoded.
 #[must_use]
 pub fn decode_v8_item_data(entry_id: u32, data: &[u8]) -> Option<V8ItemInstance> {
+    let mut budget = V8_MAX_ITEM_BYTES;
+    match decode_within(entry_id, data, &mut budget) {
+        Decoded::Instance(item) => Some(item),
+        Decoded::Raw | Decoded::OverLimit => None,
+    }
+}
+
+enum Decoded {
+    Instance(V8ItemInstance),
+    /// The data does not match the observed layout.
+    Raw,
+    /// The instance needs more decoded bytes than the call has left.
+    OverLimit,
+}
+
+/// Decode one instance against the bytes the call has left. Only an
+/// instance that is returned is charged.
+fn decode_within(entry_id: u32, data: &[u8], budget: &mut usize) -> Decoded {
+    let mut cursor = Cursor {
+        data,
+        offset: STRING_COUNT_OFFSET,
+        budget: *budget,
+        over_limit: false,
+    };
+    match decode_layout(entry_id, &mut cursor) {
+        Some(item) => {
+            *budget = cursor.budget;
+            Decoded::Instance(item)
+        }
+        None if cursor.over_limit => Decoded::OverLimit,
+        None => Decoded::Raw,
+    }
+}
+
+fn decode_layout(entry_id: u32, cursor: &mut Cursor<'_>) -> Option<V8ItemInstance> {
+    let data = cursor.data;
     if data.get(..HEAD.len())? != HEAD {
         return None;
     }
@@ -108,10 +201,6 @@ pub fn decode_v8_item_data(entry_id: u32, data: &[u8]) -> Option<V8ItemInstance>
     if data.get(SIGNATURE_OFFSET..STRING_COUNT_OFFSET)? != SIGNATURE {
         return None;
     }
-    let mut cursor = Cursor {
-        data,
-        offset: STRING_COUNT_OFFSET,
-    };
     let count = cursor.small()?;
     let mut strings = Vec::with_capacity(count);
     for _ in 0..count {
@@ -154,6 +243,10 @@ pub fn decode_v8_item_data(entry_id: u32, data: &[u8]) -> Option<V8ItemInstance>
 struct Cursor<'a> {
     data: &'a [u8],
     offset: usize,
+    /// Decoded bytes the call may still return.
+    budget: usize,
+    /// Set when a string did not fit `budget`.
+    over_limit: bool,
 }
 
 impl Cursor<'_> {
@@ -204,9 +297,17 @@ impl Cursor<'_> {
         }
     }
 
+    /// A copy of the string a string number names, charged to the budget
+    /// before it is made.
     fn reference(&mut self, strings: &[String]) -> Option<String> {
         let number = self.small()?;
-        strings.get(number).cloned()
+        let text = strings.get(number)?;
+        let Some(left) = self.budget.checked_sub(text.len() + STRING_COST) else {
+            self.over_limit = true;
+            return None;
+        };
+        self.budget = left;
+        Some(text.clone())
     }
 }
 
@@ -567,6 +668,127 @@ mod tests {
         assert!(decode_v8_item_data(1, &surrogate).is_none());
         surrogate[STRING_COUNT_OFFSET + 4] = 0x00;
         assert!(decode_v8_item_data(1, &surrogate).is_some());
+    }
+
+    /// The decoded bytes an instance is charged with.
+    fn cost(item: &V8ItemInstance) -> usize {
+        let values = item.attributes.iter().chain(&item.properties);
+        std::iter::once(&item.class_name)
+            .chain(values.flat_map(|value| [&value.name, &value.value]))
+            .map(|text| text.len() + STRING_COST)
+            .sum()
+    }
+
+    /// The longest string the table can hold: 127 UTF-16 units that each
+    /// take three bytes of UTF-8.
+    const LONG_BYTES: usize = 127 * 3;
+
+    /// An instance whose table holds the one long string, used as the class
+    /// name and as the name and the value of `pairs` attributes. Each pair is
+    /// four stored bytes and 762 bytes of decoded text.
+    fn amplifying(pairs: usize) -> Vec<u8> {
+        let long = "\u{3042}".repeat(127);
+        assert_eq!(long.len(), LONG_BYTES);
+        let mut tokens = vec![TOKEN_ROOT, 0];
+        for _ in 0..pairs {
+            tokens.extend([TOKEN_ATTRIBUTE, 0, TOKEN_VALUE, 0]);
+        }
+        tokens.extend([TOKEN_CONTENT, TOKEN_END]);
+        item_bytes(1, &[&long], &tokens)
+    }
+
+    #[test]
+    fn an_instance_is_held_to_the_decoded_byte_limit() {
+        let string = LONG_BYTES + STRING_COST;
+        let fits = (V8_MAX_ITEM_BYTES - string) / (2 * string);
+        let item = decode_v8_item_data(1, &amplifying(fits)).unwrap();
+        assert_eq!(item.attributes.len(), fits);
+        assert_eq!(cost(&item), string + fits * 2 * string);
+        assert!(cost(&item) <= V8_MAX_ITEM_BYTES);
+        // One more pair is four more stored bytes. The instance would pass
+        // the limit, so it is not decoded.
+        let over = amplifying(fits + 1);
+        assert!(over.len() < 8 * 1024);
+        assert!(decode_v8_item_data(1, &over).is_none());
+
+        // References to the empty string are charged too, in properties as
+        // in attributes.
+        let empty = |properties: usize| {
+            let mut tokens = vec![TOKEN_ROOT, 0, TOKEN_ATTRIBUTE, 0, TOKEN_VALUE, 0];
+            tokens.push(TOKEN_CONTENT);
+            for _ in 0..properties {
+                tokens.extend([TOKEN_CHILD, 0, TOKEN_VALUE, 0, TOKEN_END]);
+            }
+            tokens.push(TOKEN_END);
+            item_bytes(1, &[""], &tokens)
+        };
+        let fits = (V8_MAX_ITEM_BYTES - 3 * STRING_COST) / (2 * STRING_COST);
+        let item = decode_v8_item_data(1, &empty(fits)).unwrap();
+        assert_eq!(item.properties.len(), fits);
+        assert!(cost(&item) <= V8_MAX_ITEM_BYTES);
+        assert!(decode_v8_item_data(1, &empty(fits + 1)).is_none());
+    }
+
+    #[test]
+    fn one_call_for_many_entries_is_held_to_the_decoded_byte_limit() {
+        let string = LONG_BYTES + STRING_COST;
+        // each large instance takes more than half of the limit
+        let large = amplifying(V8_MAX_ITEM_BYTES / (4 * string) + 1);
+        let small = item_data(1, "Pump", &ATTRIBUTES, &[("Tag", "P-101")]);
+        let mut damaged = small.clone();
+        damaged.pop();
+        let decode = |blobs: &[(u32, &[u8])]| {
+            let entries = blobs
+                .iter()
+                .zip(1..)
+                .map(|((type_id, data), entry_id)| entry(*type_id, entry_id, true, data))
+                .collect::<Vec<_>>();
+            let bytes = payload(&entries);
+            let count = u32::try_from(entries.len()).unwrap();
+            decode_v8_item_instances(decode_v8_auxiliary_entries(&bytes, count).unwrap())
+        };
+        let ids = |decoded: &V8ItemInstances| {
+            decoded
+                .instances
+                .iter()
+                .map(|item| item.entry_id)
+                .collect::<Vec<_>>()
+        };
+        let total = |decoded: &V8ItemInstances| decoded.instances.iter().map(cost).sum::<usize>();
+        let item = V8_ITEM_INSTANCE_ENTRY_TYPE;
+
+        // Each of the two large instances decodes alone. Together they pass
+        // the limit: the second stays raw, and so does every item entry
+        // after it, also one that is small.
+        assert!(decode_v8_item_data(1, &large).is_some());
+        let decoded = decode(&[
+            (item, &large),
+            (0x5709_0000, &small),
+            (item, &large),
+            (item, &small),
+            (0x5709_0000, &small),
+            (item, &damaged),
+        ]);
+        assert_eq!(ids(&decoded), [1]);
+        assert_eq!(decoded.over_limit, 3);
+        assert!(total(&decoded) <= V8_MAX_ITEM_BYTES);
+
+        // An entry that does not match the layout is not charged and is not
+        // counted; the instances before the limit are returned.
+        let decoded = decode(&[
+            (item, &small),
+            (item, &damaged),
+            (item, &large),
+            (item, &large),
+        ]);
+        assert_eq!(ids(&decoded), [1, 3]);
+        assert_eq!(decoded.over_limit, 1);
+        assert!(total(&decoded) <= V8_MAX_ITEM_BYTES);
+
+        // Without the limit in reach nothing is counted.
+        let decoded = decode(&[(item, &small), (item, &damaged), (item, &small)]);
+        assert_eq!(ids(&decoded), [1, 3]);
+        assert_eq!(decoded.over_limit, 0);
     }
 
     #[test]

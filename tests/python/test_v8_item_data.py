@@ -10,8 +10,10 @@ import pytest
 import ezdgn
 from ezdgn.v8 import (
     V8_ITEM_INSTANCE_ENTRY_TYPE,
+    V8_MAX_ITEM_BYTES,
     decode_auxiliary_entries,
     decode_item_instance,
+    decode_item_instances,
 )
 
 
@@ -189,6 +191,81 @@ def test_only_item_entries_with_the_observed_layout_are_decoded() -> None:
     assert decode(V8_ITEM_INSTANCE_ENTRY_TYPE, long_string) is None
     high_number = data[:-1] + bytes([CHILD, 0x80, VALUE, 0, END, END])
     assert decode(V8_ITEM_INSTANCE_ENTRY_TYPE, high_number) is None
+
+
+def _record(*entries: bytes) -> ezdgn.V8AuxiliaryRecord:
+    payload = _payload(*entries)
+    return ezdgn.V8AuxiliaryRecord(
+        index=0,
+        stream_path="made-up",
+        inflated_offset=0,
+        magic=0,
+        kind=170,
+        reserved=0,
+        element_id=1,
+        flags=len(entries),
+        raw_bytes=payload,
+        payload=payload,
+    )
+
+
+def _text_bytes(items: tuple[ezdgn.V8ItemInstance, ...]) -> int:
+    return sum(
+        len(text.encode())
+        for item in items
+        for text in (item.class_name, *(part for pair in item.attributes for part in pair))
+    )
+
+
+def test_item_decoding_is_held_to_the_decoded_byte_limit() -> None:
+    assert V8_MAX_ITEM_BYTES == 1_048_576
+    # One table string of 127 three-byte characters. Each attribute pair is
+    # four stored bytes that ask for two copies of it.
+    long = "\u3042" * 127
+    assert len(long.encode()) == 381
+
+    def amplifying(pairs: int) -> bytes:
+        return _item_data(1, long, ((long, long),) * pairs, ())
+
+    def decode(blob: bytes) -> ezdgn.V8ItemInstance | None:
+        (entry,) = decode_auxiliary_entries(
+            _payload(_entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, blob)), 1
+        )
+        return decode_item_instance(entry)
+
+    # more than half of the limit, and inside it: decoded
+    large = amplifying(700)
+    assert len(large) < 4 * 1024
+    item = decode(large)
+    assert item is not None and len(item.attributes) == 700
+    assert V8_MAX_ITEM_BYTES // 2 < _text_bytes((item,)) <= V8_MAX_ITEM_BYTES
+    # twice that text is over the limit: the entry stays raw
+    over = amplifying(1_400)
+    assert len(over) < 8 * 1024
+    assert decode(over) is None
+
+    # One call for all records of an element shares one limit: the second
+    # large entry and the item entries after it are counted, not decoded.
+    small = _item_data(1, "Pump", ATTRIBUTES, (("Tag", "P-101"),))
+    item_type = V8_ITEM_INSTANCE_ENTRY_TYPE
+    records = (
+        _record(_entry(item_type, 1, large), _entry(0x5709_0000, 2, small)),
+        _record(_entry(item_type, 3, large), _entry(item_type, 4, small)),
+        _record(_entry(item_type, 5, small)),
+    )
+    decoded = decode_item_instances(records)
+    assert isinstance(decoded, ezdgn.V8ItemInstances)
+    assert [item.entry_id for item in decoded.instances] == [1]
+    assert decoded.over_limit == 3
+    assert _text_bytes(decoded.instances) <= V8_MAX_ITEM_BYTES
+
+    # without the limit in reach every item entry is listed, in stored order
+    decoded = decode_item_instances(
+        (_record(_entry(item_type, 1, small)), _record(), _record(_entry(item_type, 2, small)))
+    )
+    assert [item.entry_id for item in decoded.instances] == [1, 2]
+    assert decoded.over_limit == 0
+    assert decode_item_instances(()) == ezdgn.V8ItemInstances(instances=(), over_limit=0)
 
 
 def test_fixture_auxiliary_record_holds_one_entry_and_no_item_data() -> None:
