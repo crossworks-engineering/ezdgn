@@ -562,7 +562,8 @@ pub fn decode_v8_shared_cell_definitions(
 }
 
 /// Scan a V8 file and decode its shared-cell definitions with the unit scale
-/// of the model at `model_index`.
+/// of the model at `model_index`. An index that is not a model of the
+/// document is [`DgnError::V8ModelIndexOutOfRange`].
 pub fn read_v8_shared_cell_definitions(
     input: &[u8],
     options: V8ScanOptions,
@@ -572,21 +573,27 @@ pub fn read_v8_shared_cell_definitions(
     let model = raw
         .models
         .get(model_index)
-        .ok_or_else(|| missing_model(model_index))?;
+        .ok_or_else(|| missing_model(model_index, raw.models.len()))?;
     let metadata = decode_model_metadata(model, options)?;
     decode_v8_shared_cell_definitions(&raw, &metadata, options)
 }
 
-fn missing_model(model_index: usize) -> DgnError {
-    DgnError::InvalidV8ModelIndex {
-        offset: 0,
-        context: format!("the document has no model {model_index}"),
+/// A wrong index is the caller's error. A document without any model has no
+/// right index: that is a property of the file.
+fn missing_model(index: usize, count: usize) -> DgnError {
+    if count == 0 {
+        return DgnError::InvalidV8ModelIndex {
+            offset: 0,
+            context: "the document has no model".to_owned(),
+        };
     }
+    DgnError::V8ModelIndexOutOfRange { index, count }
 }
 
 impl V8Document {
     /// The shared-cell definitions of the document, decoded on each call
-    /// with the unit scale of the model at `model_index`.
+    /// with the unit scale of the model at `model_index`. An index that is
+    /// not a model of the document is [`DgnError::V8ModelIndexOutOfRange`].
     pub fn shared_cell_definitions(
         &self,
         model_index: usize,
@@ -595,7 +602,7 @@ impl V8Document {
         let model = self
             .models
             .get(model_index)
-            .ok_or_else(|| missing_model(model_index))?;
+            .ok_or_else(|| missing_model(model_index, self.models.len()))?;
         decode_v8_shared_cell_definitions(&self.raw, &model.metadata, options)
     }
 
@@ -2395,8 +2402,19 @@ mod tests {
             document.shared_cell_definitions(1, V8ScanOptions::default()),
             read_v8_shared_cell_definitions(&dgn, V8ScanOptions::default(), 1),
         ] {
-            assert!(matches!(result, Err(DgnError::InvalidV8ModelIndex { .. })));
+            // a wrong argument, not a malformed file
+            let error = result.unwrap_err();
+            assert_eq!(
+                error,
+                DgnError::V8ModelIndexOutOfRange { index: 1, count: 1 }
+            );
+            assert!(error.is_argument_error());
         }
+        assert!(matches!(
+            missing_model(0, 0),
+            DgnError::InvalidV8ModelIndex { .. }
+        ));
+        assert!(!missing_model(0, 0).is_argument_error());
     }
 
     #[test]

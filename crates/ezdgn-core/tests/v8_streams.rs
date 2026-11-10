@@ -254,10 +254,12 @@ fn the_fixture_shared_cell_instance_finds_and_places_its_definition() {
         place(1.0, 1.0),
         (range.high[0] as f64, range.high[1] as f64)
     );
-    assert!(matches!(
-        document.shared_cell_definitions(1, V8ScanOptions::default()),
-        Err(DgnError::InvalidV8ModelIndex { .. })
-    ));
+    assert_eq!(
+        document
+            .shared_cell_definitions(1, V8ScanOptions::default())
+            .unwrap_err(),
+        DgnError::V8ModelIndexOutOfRange { index: 1, count: 1 }
+    );
 }
 
 #[test]

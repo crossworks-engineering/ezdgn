@@ -993,7 +993,8 @@ def read_v8_shared_cell_definitions(
 
     They are not part of ``read_v8()``: a file can hold many more definition
     components than drawn elements. ``model_index`` selects the model whose
-    unit scale gives the master values.
+    unit scale gives the master values. A ``model_index`` that is negative or
+    not a model of the document raises ``ValueError``.
     """
 
     actual_limits = limits or V8ScanLimits()

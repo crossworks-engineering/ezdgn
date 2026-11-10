@@ -14,7 +14,7 @@ use ezdgn_core::{
     WritableElement2D,
 };
 use pyo3::create_exception;
-use pyo3::exceptions::PyException;
+use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
@@ -1710,7 +1710,9 @@ fn format_row(format: ezdgn_core::DgnFormat) -> FormatRow {
 
 fn core_error_to_python(error: CoreDgnError) -> PyErr {
     let message = error.to_string();
-    if error.is_unsupported_error() {
+    if error.is_argument_error() {
+        PyValueError::new_err(message)
+    } else if error.is_unsupported_error() {
         UnsupportedDgnError::new_err(message)
     } else if error.is_limit_error() {
         DgnLimitError::new_err(message)

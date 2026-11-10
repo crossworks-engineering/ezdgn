@@ -311,9 +311,11 @@ def test_shared_cell_definitions_are_read_on_request() -> None:
         for item in model.elements
     )
 
-    with pytest.raises(ezdgn.InvalidDgnError):
-        ezdgn.read_v8_shared_cell_definitions(V8, model_index=1)
-    with pytest.raises(ValueError):
-        ezdgn.read_v8_shared_cell_definitions(V8, model_index=-1)
+    # a wrong model index is a wrong argument in both directions, and it is
+    # not an error of the ezdgn family: the file is not at fault
+    for wrong in (1, -1):
+        with pytest.raises(ValueError) as caught:
+            ezdgn.read_v8_shared_cell_definitions(V8, model_index=wrong)
+        assert not isinstance(caught.value, ezdgn.DgnError)
     with pytest.raises(ezdgn.UnsupportedDgnError):
         ezdgn.read_v8_shared_cell_definitions(V7)
