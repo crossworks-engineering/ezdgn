@@ -20,6 +20,7 @@ from ._core import (
     DEFAULT_MAX_V8_TOTAL_INFLATED_BYTES,
     DEFAULT_MAX_V8_VERTICES,
     V8_ITEM_INSTANCE_ENTRY_TYPE,
+    V8_MAX_AUXILIARY_ENTRIES,
     V8_MAX_ITEM_BYTES,
     V8_MAX_TAG_SET_BYTES,
     V8_TAG_SET_CODE,
@@ -209,7 +210,8 @@ class V8AuxiliaryRecord:
     @property
     def entries(self) -> tuple[V8AuxiliaryEntry, ...] | None:
         """The entries of the payload, or ``None`` when the payload does not
-        follow the entry layout exactly.
+        follow the entry layout exactly or declares more than
+        ``V8_MAX_AUXILIARY_ENTRIES`` entries.
 
         The payload is split on each access and nothing is stored, so a
         document costs no more to read when the entries are not used.
@@ -1125,7 +1127,8 @@ def decode_auxiliary_entries(
     """Split an auxiliary payload that declares ``entry_count`` entries.
 
     Returns ``None`` when the payload does not hold exactly that many entries
-    followed by the closing word. Nothing is guessed or skipped.
+    followed by the closing word. Nothing is guessed or skipped. A count above
+    ``V8_MAX_AUXILIARY_ENTRIES`` also returns ``None``.
     """
 
     if not 0 <= entry_count <= 0xFFFF_FFFF:
@@ -1457,6 +1460,7 @@ __all__ = [
     "SYMBOLOGY_BY_LEVEL",
     "TAG_SET_ELEMENT_TYPE",
     "V8_ITEM_INSTANCE_ENTRY_TYPE",
+    "V8_MAX_AUXILIARY_ENTRIES",
     "V8_MAX_ITEM_BYTES",
     "V8_MAX_TAG_SET_BYTES",
     "V8_TAG_SET_CODE",

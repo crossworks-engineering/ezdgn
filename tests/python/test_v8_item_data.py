@@ -10,6 +10,7 @@ import pytest
 import ezdgn
 from ezdgn.v8 import (
     V8_ITEM_INSTANCE_ENTRY_TYPE,
+    V8_MAX_AUXILIARY_ENTRIES,
     V8_MAX_ITEM_BYTES,
     decode_auxiliary_entries,
     decode_item_instance,
@@ -93,6 +94,17 @@ def test_auxiliary_payload_splits_into_entries() -> None:
     assert second.reserved == 0
     assert second.data == item
     assert decode_auxiliary_entries(b"\x01\x00\x00\x00", 0) == ()
+
+
+def test_a_payload_with_more_entries_than_the_limit_stays_raw() -> None:
+    assert V8_MAX_AUXILIARY_ENTRIES == 65_536
+    empty = _entry(0x5709_0000, 0, b"", flag=False)
+    at_limit = decode_auxiliary_entries(
+        _payload(empty * V8_MAX_AUXILIARY_ENTRIES), V8_MAX_AUXILIARY_ENTRIES
+    )
+    assert at_limit is not None and len(at_limit) == V8_MAX_AUXILIARY_ENTRIES
+    over = V8_MAX_AUXILIARY_ENTRIES + 1
+    assert decode_auxiliary_entries(_payload(empty * over), over) is None
 
 
 @pytest.mark.parametrize(

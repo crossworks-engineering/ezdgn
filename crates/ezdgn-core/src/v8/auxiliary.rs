@@ -7,6 +7,14 @@ const ENTRY_HEADER_BYTES: usize = 16;
 const PAYLOAD_TRAILER: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
 const ENTRY_SIZE_MASK: u32 = 0x7fff_ffff;
 
+/// Most entries one auxiliary payload is split into.
+///
+/// The entry count comes from the file and an entry can be an empty
+/// 16-byte header, so a large record could ask for a long list of small
+/// entries. A payload that declares more entries is not split and stays
+/// raw. The largest count seen in one record is 8.
+pub const V8_MAX_AUXILIARY_ENTRIES: usize = 1 << 16;
+
 /// One framed entry of an auxiliary-record payload.
 ///
 /// An auxiliary record holds every entry attached to one element. The header
@@ -63,7 +71,8 @@ impl V8AuxiliaryRecord {
     /// Split the payload into its entries.
     ///
     /// Returns `None` when the payload does not follow the entry layout
-    /// exactly; the record then remains available only as raw bytes.
+    /// exactly or declares more than [`V8_MAX_AUXILIARY_ENTRIES`] entries;
+    /// the record then remains available only as raw bytes.
     #[must_use]
     pub fn entries(&self) -> Option<Vec<V8AuxiliaryEntry>> {
         let (bytes, payload_range) = self.shared_payload();
@@ -75,7 +84,8 @@ impl V8AuxiliaryRecord {
 ///
 /// The payload must hold exactly `count` entries, each a 16-byte header
 /// followed by its declared data, and then the four bytes `01 00 00 00`.
-/// Any other shape returns `None`; nothing is guessed or skipped.
+/// Any other shape returns `None`; nothing is guessed or skipped. A count
+/// above [`V8_MAX_AUXILIARY_ENTRIES`] also returns `None`.
 #[must_use]
 pub fn decode_v8_auxiliary_entries(payload: &[u8], count: u32) -> Option<Vec<V8AuxiliaryEntry>> {
     split_entries(Arc::from(payload), 0..payload.len(), count)
@@ -88,6 +98,9 @@ fn split_entries(
 ) -> Option<Vec<V8AuxiliaryEntry>> {
     let payload = bytes.get(payload_range.clone())?;
     let count = usize::try_from(count).ok()?;
+    if count > V8_MAX_AUXILIARY_ENTRIES {
+        return None;
+    }
     let minimum = count
         .checked_mul(ENTRY_HEADER_BYTES)?
         .checked_add(PAYLOAD_TRAILER.len())?;
@@ -185,6 +198,22 @@ mod tests {
     #[test]
     fn a_record_without_entries_is_only_the_closing_word() {
         assert_eq!(decode_v8_auxiliary_entries(&[1, 0, 0, 0], 0), Some(vec![]));
+    }
+
+    #[test]
+    fn a_payload_with_more_entries_than_the_limit_stays_raw() {
+        // empty entries: a 16-byte header each, then the closing word
+        let many = |count: usize| {
+            let mut bytes = entry(0x5709_0000, 0, false, &[]).repeat(count);
+            bytes.extend([1, 0, 0, 0]);
+            (bytes, u32::try_from(count).unwrap())
+        };
+        let (bytes, count) = many(V8_MAX_AUXILIARY_ENTRIES);
+        let entries = decode_v8_auxiliary_entries(&bytes, count).unwrap();
+        assert_eq!(entries.len(), V8_MAX_AUXILIARY_ENTRIES);
+        // one more entry is a well-formed payload that is not split
+        let (bytes, count) = many(V8_MAX_AUXILIARY_ENTRIES + 1);
+        assert!(decode_v8_auxiliary_entries(&bytes, count).is_none());
     }
 
     #[test]

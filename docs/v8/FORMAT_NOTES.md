@@ -395,7 +395,9 @@ inflated size 192, then a zlib stream). The meaning of bit 31 is unresolved;
 the length is correct with the bit masked off in all three sources. Entry data
 other than the item instances below is not interpreted. A payload that does
 not hold exactly the declared number of entries followed by the closing word
-is not split at all and stays a raw payload.
+is not split at all and stays a raw payload. The entry count comes from the
+file and an entry can be an empty header, so a payload that declares more than
+65,536 entries is not split either; the largest count seen in one record is 8.
 
 ## Item instances
 

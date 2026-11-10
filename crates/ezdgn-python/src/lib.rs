@@ -1792,6 +1792,10 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "V8_TAG_SET_CODE",
         PyBytes::new(py, &ezdgn_core::V8_TAG_SET_CODE),
     )?;
+    module.add(
+        "V8_MAX_AUXILIARY_ENTRIES",
+        ezdgn_core::V8_MAX_AUXILIARY_ENTRIES,
+    )?;
     module.add("V8_MAX_ITEM_BYTES", ezdgn_core::V8_MAX_ITEM_BYTES)?;
     module.add("V8_MAX_TAG_SET_BYTES", ezdgn_core::V8_MAX_TAG_SET_BYTES)?;
     module.add("V8_TAG_VALUE_TEXT", ezdgn_core::V8_TAG_VALUE_TEXT)?;

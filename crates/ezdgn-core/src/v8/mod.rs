@@ -15,7 +15,7 @@ mod raw;
 mod stream;
 mod tag;
 
-pub use auxiliary::{decode_v8_auxiliary_entries, V8AuxiliaryEntry};
+pub use auxiliary::{decode_v8_auxiliary_entries, V8AuxiliaryEntry, V8_MAX_AUXILIARY_ENTRIES};
 pub use container::{
     inspect_v8_container, V8CfbEntry, V8CfbEntryKind, V8ContainerInfo, DEFAULT_MAX_CFB_ENTRIES,
 };
