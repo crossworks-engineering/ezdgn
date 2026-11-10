@@ -23,6 +23,9 @@ from ezdgn.v8 import (
 
 DATA = Path(__file__).parents[1] / "data" / "dgn"
 V8 = DATA / "v8" / "test_dgnv8.dgn"
+# Written by the test builder of this repository from made-up values; see
+# docs/v8/PROVENANCE.md.
+CONSTRUCTED_TAGS = DATA / "v8" / "constructed_tags.dgn"
 
 
 def _definition(
@@ -168,6 +171,101 @@ def test_tag_set_decodes_from_hand_made_bytes() -> None:
 )
 def test_tag_sets_that_do_not_match_the_layout_stay_raw(item: ezdgn.V8RawObject) -> None:
     assert decode_tag_set(item) is None
+
+
+def _tag_fields(data: ezdgn.V8ElementData) -> tuple[object, ...]:
+    assert isinstance(data, ezdgn.V8TagData)
+    return (
+        data.kind,
+        data.tag_id,
+        data.value_type,
+        data.value_bytes,
+        data.value,
+        data.tag_set_element_id,
+        data.host_element_id,
+        data.origin,
+    )
+
+
+def test_tags_of_a_constructed_file_reach_python_with_every_field() -> None:
+    # This test runs without the public file: it covers the way of a tag
+    # from the Rust reader to the Python objects in every test run.
+    document = ezdgn.read_v8(CONSTRUCTED_TAGS)
+    (model,) = document.models
+    assert [element.kind for element in model.elements] == [
+        "SHARED_CELL_INSTANCE",
+        "TAG",
+        "TAG",
+        "TAG",
+        "UNKNOWN",
+        "UNKNOWN_COMPLEX",
+        "UNKNOWN",
+    ]
+    host, attached, free, other_type = model.elements[:4]
+    # a text tag on a host: both IDs, and the origin inside the stored range
+    assert _tag_fields(attached.data) == (
+        "TAG",
+        1,
+        V8_TAG_VALUE_TEXT,
+        b"Oak\x00",
+        "Oak",
+        300,
+        800,
+        ezdgn.V8Point(uor=(960.0, -100.0, 0.0), master=(0.96, -0.1, 0.0)),
+    )
+    assert host.common.element_id == attached.data.host_element_id
+    # an integer tag with no host and with a point outside its range
+    assert _tag_fields(free.data) == (
+        "TAG",
+        2,
+        V8_TAG_VALUE_INTEGER,
+        bytes([42, 0, 0, 0]),
+        42,
+        300,
+        None,
+        None,
+    )
+    # a value type that is not decoded keeps its bytes
+    assert _tag_fields(other_type.data) == (
+        "TAG",
+        1,
+        5,
+        bytes([1, 2, 3]),
+        None,
+        None,
+        None,
+        ezdgn.V8Point(uor=(0.0, 0.0, 0.0), master=(0.0, 0.0, 0.0)),
+    )
+    for element in model.elements:
+        assert isinstance(element.data, ezdgn.V8TagData) == (element.kind == "TAG")
+        assert not (element.kind == "TAG" and element.is_drawable)
+
+    # the tag set of the file, and the join that the reader leaves to the caller
+    sets = document.tag_sets_by_id()
+    assert list(sets) == [300]
+    grove = sets[300]
+    assert grove.name == "Grove"
+    assert [(item.tag_id, item.name) for item in grove.definitions] == [
+        (1, "Variety"),
+        (2, "Yield"),
+    ]
+    assert document.tag_set(free.data.tag_set_element_id) == grove
+    assert grove.definition(free.data.tag_id).value_type == free.data.value_type
+
+    # a tag that is a component of a shared-cell definition
+    (definition,) = ezdgn.read_v8_shared_cell_definitions(CONSTRUCTED_TAGS)
+    inner = definition.elements[2]
+    assert (inner.kind, inner.parent_index) == ("TAG", 0)
+    assert _tag_fields(inner.data) == (
+        "TAG",
+        1,
+        V8_TAG_VALUE_TEXT,
+        b"Elm\x00",
+        "Elm",
+        300,
+        None,
+        ezdgn.V8Point(uor=(300.0, 100.0, 0.0), master=(0.3, 0.1, 0.0)),
+    )
 
 
 def test_tag_sets_of_a_document_are_decoded_on_request() -> None:

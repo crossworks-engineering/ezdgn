@@ -32,6 +32,23 @@ used only to check externally visible feature geometry and attributes. It does
 not preserve every control object, native curve parameter, cell component, or
 complex-element relationship and therefore is not a source-semantic oracle.
 
+### Constructed tag file
+
+- Binary: `tests/data/dgn/v8/constructed_tags.dgn`, 4,096 bytes, SHA-256
+  `51b4b36ffbdf04b94ff1f53f61ae45166d9dc8f268bbe85d66408c400523d5f7`
+- Origin: written by this repository's own test builder from made-up values
+  (`write_the_constructed_tag_fixture` in
+  `crates/ezdgn-core/src/v8/entity.rs`). It is synthetic. It is not derived
+  from any real file, and it was not made or read by an authoring
+  application.
+- Content: one 2D model with a shared-cell instance, three tag elements, and
+  type-37 objects that are not read as tags; one tag set and one shared-cell
+  definition with a tag in the named pages.
+- Use: the Python tests and the stream tests read it, so that the path from
+  the Rust reader to the Python objects is tested for a tag in every test
+  run. The expected values are the inputs of the builder. It is not evidence
+  for any format rule.
+
 ### Public CFB structure
 
 The CFB container is read through the Rust `cfb` crate. Generic CFB sector,

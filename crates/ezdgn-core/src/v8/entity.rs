@@ -2906,6 +2906,17 @@ mod tests {
         )
     }
 
+    /// Writes the document of the tag tests to the path that the variable
+    /// `EZDGN_WRITE_TAG_FIXTURE` names. This made the checked-in file
+    /// `tests/data/dgn/v8/constructed_tags.dgn`, which the Python tests and
+    /// the stream tests read.
+    #[test]
+    #[ignore = "writes a fixture file; run it by name with EZDGN_WRITE_TAG_FIXTURE set"]
+    fn write_the_constructed_tag_fixture() {
+        let path = std::env::var("EZDGN_WRITE_TAG_FIXTURE").expect("EZDGN_WRITE_TAG_FIXTURE");
+        std::fs::write(path, tagged_dgn()).unwrap();
+    }
+
     #[test]
     fn tags_are_read_with_their_value_their_set_and_their_host() {
         let document = read_v8(&tagged_dgn(), V8ScanOptions::default()).unwrap();
