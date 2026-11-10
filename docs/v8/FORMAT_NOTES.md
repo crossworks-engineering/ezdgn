@@ -359,7 +359,11 @@ The reader returns the definitions with their components in definition space.
 It does not copy or transform components into the model, and it does not
 resolve ByCell symbology. A header with another primary size, a type-34 object
 without the header role, and a run whose hierarchy cannot be built are not
-read as definitions and stay raw. The values at `0xa0` and `0xe8` of the
+read as definitions and stay raw. A value among the fifteen that is not
+finite also leaves the run raw; it is not an error. Definitions are read only
+from the named pages: a type-34 header in the graphical pages of a model is
+the unknown complex element with its child count that it was before
+definitions were read, whatever its values are. The values at `0xa0` and `0xe8` of the
 header, and the 79 instances without a definition, are unresolved.
 
 ## Auxiliary record payload entries

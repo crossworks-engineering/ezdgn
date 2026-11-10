@@ -518,7 +518,14 @@ pub fn decode_v8_shared_cell_definitions(
             end += 1;
         }
         let run = objects[start..end].iter().copied();
-        match decode_objects(run, end - start, &local, options, &mut auxiliary) {
+        match decode_objects(
+            run,
+            end - start,
+            &local,
+            options,
+            &mut auxiliary,
+            ObjectPages::Named,
+        ) {
             Ok(elements) => {
                 if let Some(V8ElementData::SharedCellDefinition { name, .. }) =
                     elements.first().map(|element| &element.data)
@@ -618,7 +625,17 @@ fn decode_model_elements(
         metadata,
         options,
         &mut auxiliary,
+        ObjectPages::Graphical,
     )
+}
+
+/// The pages a run of objects comes from. A shared-cell definition header
+/// is read as one only in the named pages; in the graphical pages of a model
+/// a type-34 header stays the unknown complex element it always was.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ObjectPages {
+    Graphical,
+    Named,
 }
 
 /// Decode a run of raw objects into elements with their hierarchy. Records
@@ -629,6 +646,7 @@ fn decode_objects<'a>(
     metadata: &V8ModelMetadata,
     options: V8ScanOptions,
     auxiliary: &mut HashMap<u64, Vec<V8AuxiliaryRecord>>,
+    pages: ObjectPages,
 ) -> Result<Vec<V8Element>, DgnError> {
     let mut elements = Vec::with_capacity(count);
     for raw in objects {
@@ -638,7 +656,7 @@ fn decode_objects<'a>(
             options,
             &format!("element {}", common.element_id),
         )?;
-        let data = match decode_element(raw, &common, metadata, &linkages, options) {
+        let data = match decode_element(raw, &common, metadata, &linkages, options, pages) {
             Ok(data) => data,
             // Component records (B-spline knots/weights and other
             // writer-specific payloads shorter than a graphical element)
@@ -760,6 +778,7 @@ fn decode_element(
     metadata: &V8ModelMetadata,
     linkages: &[V8Linkage],
     options: V8ScanOptions,
+    pages: ObjectPages,
 ) -> Result<V8ElementData, DgnError> {
     match raw.element_type {
         2 => decode_cell(raw, common, metadata),
@@ -781,7 +800,8 @@ fn decode_element(
         22 => decode_point_string(raw, common, metadata, options),
         27 => decode_bspline_header(raw),
         SHARED_CELL_DEFINITION_TYPE
-            if raw.role.is_header()
+            if pages == ObjectPages::Named
+                && raw.role.is_header()
                 && raw.primary_bytes().len() == SHARED_CELL_DEFINITION_BYTES =>
         {
             decode_shared_cell_definition(raw, linkages)
@@ -2333,6 +2353,71 @@ mod tests {
         ] {
             assert!(matches!(result, Err(DgnError::InvalidV8ModelIndex { .. })));
         }
+    }
+
+    #[test]
+    fn a_definition_header_in_a_model_stays_an_unknown_complex_element() {
+        // The same two objects in the graphical page of the model and in the
+        // named page: a definition header with one line.
+        let objects = |header: Vec<u8>| vec![header, line_component(21, [0.0, 0.0], [1.0, 1.0])];
+        let good = definition_header(20, "CELL_A", 1, SMALL);
+        let mut not_finite = good.clone();
+        write_f64(&mut not_finite, 0x70, f64::NAN);
+        write_f64(&mut not_finite, 0xa0, f64::INFINITY);
+
+        for (case, header, definitions) in [("finite", good, 1), ("not finite", not_finite, 0)] {
+            let run = objects(header);
+            let dgn = dgn_with_pages(&model_header(), &run, &[], &run);
+            // read_v8 reads the model as it did before definitions were
+            // read: an unknown complex header with its child count, whatever
+            // its values are
+            let document = read_v8(&dgn, V8ScanOptions::default()).unwrap();
+            let elements = &document.models[0].elements;
+            assert_eq!(
+                elements[0].data,
+                V8ElementData::UnknownComplex { child_count: 1 },
+                "{case}"
+            );
+            assert_eq!(elements[0].kind(), "UNKNOWN_COMPLEX", "{case}");
+            assert_eq!(elements[0].child_indices, [1], "{case}");
+            assert_eq!(elements[1].kind(), "LINE", "{case}");
+            assert_eq!(elements[1].parent_index, Some(0), "{case}");
+            // the definitions path reads the named copy, and a value that
+            // is not finite leaves that run raw without an error
+            let found = document
+                .shared_cell_definitions(0, V8ScanOptions::default())
+                .unwrap();
+            assert_eq!(found.len(), definitions, "{case}");
+        }
+    }
+
+    #[test]
+    fn a_tag_header_in_a_model_stays_an_unknown_complex_element() {
+        // A type-37 object with the header role is not read as a tag, in
+        // 2D too: it keeps its child count and the model is read.
+        let mut header = vec![0; 0x150];
+        write_u32(&mut header, 0, 0x3000_0025);
+        write_u32(&mut header, 4, 0xa8);
+        write_u32(&mut header, 8, 0xa8);
+        write_u32(&mut header, 0x0c, 64);
+        write_u64(&mut header, 0x10, 20);
+        write_u64(&mut header, 0x18, MODEL_ID);
+        write_u32(&mut header, 0x68, 1);
+        for offset in [0xa0, 0xb8] {
+            write_f64(&mut header, offset, f64::NAN);
+        }
+        let dgn = dgn_with_objects(
+            &model_header(),
+            &[header, line_component(21, [0.0, 0.0], [1.0, 1.0])],
+        );
+        let document = read_v8(&dgn, V8ScanOptions::default()).unwrap();
+        let elements = &document.models[0].elements;
+        assert_eq!(
+            elements[0].data,
+            V8ElementData::UnknownComplex { child_count: 1 }
+        );
+        assert_eq!(elements[0].child_indices, [1]);
+        assert_eq!(elements[1].parent_index, Some(0));
     }
 
     #[test]
