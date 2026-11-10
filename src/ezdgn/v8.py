@@ -843,16 +843,20 @@ class V8TagSet:
 TAG_SET_ELEMENT_TYPE = 39
 
 
-def tag_set_objects(raw: V8RawDocument) -> tuple[V8RawObject, ...]:
-    """The named objects that carry the tag-set code, decodable or not."""
-
-    return tuple(
+def _iter_tag_set_objects(raw: V8RawDocument) -> Iterator[V8RawObject]:
+    return (
         item
         for page in raw.named_pages
         for item in page.objects
         if item.element_type == TAG_SET_ELEMENT_TYPE
         and item.primary_bytes[0x28:0x30] == V8_TAG_SET_CODE
     )
+
+
+def tag_set_objects(raw: V8RawDocument) -> tuple[V8RawObject, ...]:
+    """The named objects that carry the tag-set code, decodable or not."""
+
+    return tuple(_iter_tag_set_objects(raw))
 
 
 def decode_tag_set(item: V8RawObject) -> V8TagSet | None:
@@ -975,14 +979,9 @@ class V8Document:
 
         if element_id is None:
             return None
-        for page in self.raw.named_pages:
-            for item in page.objects:
-                if (
-                    item.element_id == element_id
-                    and item.element_type == TAG_SET_ELEMENT_TYPE
-                    and item.primary_bytes[0x28:0x30] == V8_TAG_SET_CODE
-                ):
-                    return decode_tag_set(item)
+        for item in _iter_tag_set_objects(self.raw):
+            if item.element_id == element_id:
+                return decode_tag_set(item)
         return None
 
     def __iter__(self) -> Iterator[V8Model]:
