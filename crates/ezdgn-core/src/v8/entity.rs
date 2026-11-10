@@ -3006,7 +3006,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             [Some(GROVE_SET_ID), Some(301)]
         );
-        assert_eq!(crate::v8::decode_v8_tag_sets(&document.raw), sets);
+        // a tag-set object without an element ID is not decoded
+        let mut nameless = document.raw.tag_set_objects().next().unwrap().clone();
+        assert!(crate::v8::decode_v8_tag_set(&nameless).is_some());
+        nameless.element_id = None;
+        assert!(crate::v8::decode_v8_tag_set(&nameless).is_none());
         for other in &document.raw.named_pages[0].objects[..3] {
             assert!(crate::v8::decode_v8_tag_set(other).is_none());
         }
