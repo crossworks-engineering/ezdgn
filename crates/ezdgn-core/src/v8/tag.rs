@@ -113,23 +113,18 @@ pub fn decode_v8_tag_set(object: &V8RawObject) -> Option<V8TagSet> {
 /// two unresolved words, a zero byte and the default. A value type other
 /// than text or integer makes the whole set undecodable, and so do more
 /// than [`V8_MAX_TAG_SET_BYTES`] definition bytes.
+///
+/// The name linkage in `attributes` is decoded with the default limits of
+/// the reader, not with the options of a read, and a linkage that does not
+/// decode leaves the set undecoded. The strings of the definitions are held
+/// by the limit of the set alone.
 #[must_use]
 pub fn decode_v8_tag_set_data(
     element_id: u64,
     primary: &[u8],
     attributes: &[u8],
 ) -> Option<V8TagSet> {
-    if !holds_tag_set_code(primary) {
-        return None;
-    }
-    let size = read_u32(primary, TAG_SET_SIZE_OFFSET)?;
-    if read_u32(primary, TAG_SET_SIZE_OFFSET + 4)? != size {
-        return None;
-    }
-    let size = usize::try_from(size).ok()?;
-    if size > V8_MAX_TAG_SET_BYTES {
-        return None;
-    }
+    let size = declared_size(primary)?;
     let end = TAG_SET_DEFINITIONS_OFFSET.checked_add(size)?;
     if !matches!(primary.get(end..)?, [] | [0]) {
         return None;
@@ -178,25 +173,64 @@ pub fn decode_v8_tag_set_data(
 ///
 /// A named object that carries the tag-set code but does not decode is not
 /// listed; [`V8RawDocument::tag_set_objects`] still returns it. One call
-/// reads at most [`V8_MAX_TAG_SET_BYTES`] bytes after the fixed head of
-/// these objects: the first object that would pass that total ends the
-/// call, and it and the objects after it are not listed.
+/// reads at most [`V8_MAX_TAG_SET_BYTES`] bytes in sum; see
+/// [`decode_v8_tag_set_parts`] for what is counted.
 #[must_use]
 pub fn decode_v8_tag_sets(raw: &V8RawDocument) -> Vec<V8TagSet> {
+    decode_v8_tag_set_parts(raw.tag_set_objects().filter_map(|object| {
+        Some((
+            object.element_id?,
+            object.primary_bytes(),
+            object.attribute_bytes(),
+        ))
+    }))
+}
+
+/// Decode tag sets from the element ID, the primary bytes and the attribute
+/// bytes of their named objects, in the given order.
+///
+/// One call reads at most [`V8_MAX_TAG_SET_BYTES`] bytes in sum. An object
+/// costs the definition bytes it declares plus its attribute bytes, which
+/// hold its name. An object that cannot decode within the limit is passed
+/// over and costs nothing: its two stored sizes differ, they declare more
+/// than the limit, or its own cost is over the limit. The first other
+/// object that would pass the sum ends the call, and it and the objects
+/// after it are not listed.
+#[must_use]
+pub fn decode_v8_tag_set_parts<'a>(
+    parts: impl IntoIterator<Item = (u64, &'a [u8], &'a [u8])>,
+) -> Vec<V8TagSet> {
     let mut budget = V8_MAX_TAG_SET_BYTES;
     let mut sets = Vec::new();
-    for object in raw.tag_set_objects() {
-        let cost = object
-            .primary_bytes()
-            .len()
-            .saturating_sub(TAG_SET_DEFINITIONS_OFFSET);
+    for (element_id, primary, attributes) in parts {
+        let Some(cost) = declared_size(primary)
+            .map(|size| size.saturating_add(attributes.len()))
+            .filter(|cost| *cost <= V8_MAX_TAG_SET_BYTES)
+        else {
+            continue;
+        };
         if cost > budget {
             break;
         }
         budget -= cost;
-        sets.extend(decode_v8_tag_set(object));
+        sets.extend(decode_v8_tag_set_data(element_id, primary, attributes));
     }
     sets
+}
+
+/// The declared byte length of the definitions, when the object carries the
+/// tag-set code, stores the length twice, and the length is within the
+/// limit of one set.
+fn declared_size(primary: &[u8]) -> Option<usize> {
+    if !holds_tag_set_code(primary) {
+        return None;
+    }
+    let size = read_u32(primary, TAG_SET_SIZE_OFFSET)?;
+    if read_u32(primary, TAG_SET_SIZE_OFFSET + 4)? != size {
+        return None;
+    }
+    let size = usize::try_from(size).ok()?;
+    (size <= V8_MAX_TAG_SET_BYTES).then_some(size)
 }
 
 impl V8RawDocument {
@@ -545,6 +579,58 @@ mod tests {
         // a set without definitions
         let empty = decode_v8_tag_set_data(79, &tag_set_primary(&[]), &[]).unwrap();
         assert!(empty.definitions.is_empty());
+    }
+
+    #[test]
+    fn one_call_counts_names_too_and_leaves_out_what_cannot_decode() {
+        let primary = tag_set_primary(&sample_definitions());
+        let ids = |parts: &[(u64, &[u8], &[u8])]| {
+            decode_v8_tag_set_parts(parts.iter().copied())
+                .iter()
+                .map(|set| set.element_id)
+                .collect::<Vec<_>>()
+        };
+        // An object that declares more than the limit and one whose two
+        // sizes differ cannot decode. They cost nothing and do not end the
+        // call: the set after them is listed.
+        let over = u32::try_from(V8_MAX_TAG_SET_BYTES + 1)
+            .unwrap()
+            .to_le_bytes();
+        let mut oversized = primary.clone();
+        oversized[TAG_SET_SIZE_OFFSET..TAG_SET_SIZE_OFFSET + 4].copy_from_slice(&over);
+        oversized[TAG_SET_SIZE_OFFSET + 4..TAG_SET_SIZE_OFFSET + 8].copy_from_slice(&over);
+        let mut unequal = primary.clone();
+        unequal[TAG_SET_SIZE_OFFSET] ^= 1;
+        assert_eq!(
+            ids(&[(1, &oversized, &[]), (2, &unequal, &[]), (3, &primary, &[])]),
+            [3]
+        );
+
+        // The attribute bytes count. Two sets without definitions whose
+        // attribute bytes fill the limit leave no room for a third set.
+        let empty = tag_set_primary(&[]);
+        let half = vec![0; V8_MAX_TAG_SET_BYTES / 2];
+        assert_eq!(
+            ids(&[(1, &empty, &half), (2, &empty, &half), (3, &primary, &[])]),
+            [1, 2]
+        );
+        assert_eq!(ids(&[(1, &empty, &half), (3, &primary, &[])]), [1, 3]);
+        // An object whose own cost is over the limit is passed over.
+        let more = vec![0; V8_MAX_TAG_SET_BYTES + 1];
+        assert_eq!(ids(&[(1, &empty, &more), (3, &primary, &[])]), [3]);
+    }
+
+    #[test]
+    fn a_name_linkage_that_does_not_decode_leaves_the_set_undecoded() {
+        let primary = tag_set_primary(&sample_definitions());
+        assert!(decode_v8_tag_set_data(1, &primary, &plain_name_linkage("Grove")).is_some());
+        // a property linkage that declares more text than any limit allows
+        let mut linkage = ((crate::v8::V8_PROPERTY_LINKAGE_KIND << 8) | 5)
+            .to_le_bytes()
+            .to_vec();
+        linkage.extend(1_u32.to_le_bytes());
+        linkage.extend(0x7fff_ffff_u32.to_le_bytes());
+        assert!(decode_v8_tag_set_data(1, &primary, &linkage).is_none());
     }
 
     #[test]

@@ -33,6 +33,7 @@ from ._core import decode_v8_auxiliary_payload as _decode_v8_auxiliary_payload
 from ._core import decode_v8_item_instance_data as _decode_v8_item_instance_data
 from ._core import decode_v8_item_instances_data as _decode_v8_item_instances_data
 from ._core import decode_v8_tag_set_data as _decode_v8_tag_set_data
+from ._core import decode_v8_tag_sets_data as _decode_v8_tag_sets_data
 from ._core import inspect_v8_cfb as _inspect_v8_cfb
 from ._core import read_v8_document as _read_v8_document
 from ._core import read_v8_shared_cells as _read_v8_shared_cells
@@ -865,10 +866,14 @@ def decode_tag_set(item: V8RawObject) -> V8TagSet | None:
         return None
     row = cast(
         "dict[str, Any] | None",
-        _decode_v8_tag_set_data(item.element_id, item.primary_bytes, item.attribute_bytes),
+        _decode_v8_tag_set_data(
+            item.element_id, item.primary_bytes, item.attribute_bytes
+        ),
     )
-    if row is None:
-        return None
+    return None if row is None else _tag_set_from_core(row)
+
+
+def _tag_set_from_core(row: dict[str, Any]) -> V8TagSet:
     return V8TagSet(
         element_id=row["element_id"],
         name=row["name"],
@@ -890,22 +895,26 @@ def tag_sets(raw: V8RawDocument) -> tuple[V8TagSet, ...]:
 
     A tag set that does not match the observed layout is not listed; it stays
     among ``tag_set_objects(raw)``. One call reads at most
-    ``V8_MAX_TAG_SET_BYTES`` bytes after the fixed head of these objects: the
-    first object that would pass that total ends the call, and it and the
-    objects after it are not listed.
+    ``V8_MAX_TAG_SET_BYTES`` bytes in sum. An object costs the definition
+    bytes it declares plus its attribute bytes, which hold its name. An object
+    that cannot decode within the limit is passed over and costs nothing: its
+    two stored sizes differ, they declare more than the limit, or its own cost
+    is over the limit. The first other object that would pass the sum ends
+    the call, and it and the objects after it are not listed. The core applies
+    this limit; this function has no second copy of it.
     """
 
-    budget = V8_MAX_TAG_SET_BYTES
-    result: list[V8TagSet] = []
-    for item in tag_set_objects(raw):
-        cost = max(0, item.attribute_words * 2 - 0x3C)
-        if cost > budget:
-            break
-        budget -= cost
-        tag_set = decode_tag_set(item)
-        if tag_set is not None:
-            result.append(tag_set)
-    return tuple(result)
+    rows = cast(
+        "list[dict[str, Any]]",
+        _decode_v8_tag_sets_data(
+            [
+                (item.element_id, item.primary_bytes, item.attribute_bytes)
+                for item in tag_set_objects(raw)
+                if item.element_id is not None
+            ]
+        ),
+    )
+    return tuple(_tag_set_from_core(row) for row in rows)
 
 
 @dataclass(frozen=True, slots=True)

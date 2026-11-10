@@ -373,6 +373,15 @@ def test_tag_set_decoding_is_bounded() -> None:
     last = decode_tag_set(big[2])
     assert last is not None and last.element_id == 302
 
+    # An object that declares more than the limit cannot decode. It is
+    # passed over: it does not end the call for the sets after it.
+    hostile = _named_object(299, _primary(DEFINITIONS, sizes=(1 << 21, 1 << 21)))
+    raw = replace(
+        document.raw, named_pages=(replace(page, objects=(hostile, big[0])),)
+    )
+    assert tag_set_objects(raw) == (hostile, big[0])
+    assert [item.element_id for item in tag_sets(raw)] == [300]
+
 
 def test_a_tag_element_is_not_drawable_and_keeps_its_fields_in_the_cli_payload() -> None:
     import json

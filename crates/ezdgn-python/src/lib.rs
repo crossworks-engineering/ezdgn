@@ -2,16 +2,16 @@
 
 use ezdgn_core::{
     decode_common_header, decode_design_settings, decode_v8_auxiliary_entries, decode_v8_item_data,
-    decode_v8_item_instances, decode_v8_tag_set_data as core_decode_v8_tag_set_data, detect_format,
-    inspect_v8_container, read_v7_2d, read_v8,
+    decode_v8_item_instances, decode_v8_tag_set_data as core_decode_v8_tag_set_data,
+    decode_v8_tag_set_parts, detect_format, inspect_v8_container, read_v7_2d, read_v8,
     read_v8_shared_cell_definitions as core_read_v8_shared_cell_definitions, scan_records,
     scan_v8_objects as core_scan_v8_objects, write_v7_2d, CommonElementHeader, DesignSettings,
     DgnError as CoreDgnError, ElementData2D, LinkageData, MasterPoint, Point2, RawPoint,
     RecordScan, ScanOptions, V7Document2D, V7ElementStyle, V7WriteOptions, V8AuxiliaryEntry,
     V8AuxiliaryPage, V8AuxiliaryRecord, V8CommonHeader, V8Document, V8Element, V8ElementData,
     V8ItemInstance, V8ItemValue, V8Linkage, V8ModelMetadata, V8ObjectPage, V8ObjectRole, V8Point,
-    V8Range3, V8Range3I64, V8RawDocument, V8RawObject, V8ReadOptions, V8ScanOptions, V8TagValue,
-    WritableElement2D,
+    V8Range3, V8Range3I64, V8RawDocument, V8RawObject, V8ReadOptions, V8ScanOptions, V8TagSet,
+    V8TagValue, WritableElement2D,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
@@ -372,9 +372,31 @@ fn decode_v8_tag_set_data(
     primary: &[u8],
     attributes: &[u8],
 ) -> PyResult<Option<Py<PyDict>>> {
-    let Some(set) = core_decode_v8_tag_set_data(element_id, primary, attributes) else {
-        return Ok(None);
-    };
+    core_decode_v8_tag_set_data(element_id, primary, attributes)
+        .map(|set| Ok(v8_tag_set_dict(py, &set)?.unbind()))
+        .transpose()
+}
+
+/// Decode the tag sets among the given named objects, each as its element
+/// ID, primary bytes and attribute bytes, under the byte limit of one call.
+#[pyfunction]
+fn decode_v8_tag_sets_data(
+    py: Python<'_>,
+    objects: Vec<(u64, Bound<'_, PyBytes>, Bound<'_, PyBytes>)>,
+) -> PyResult<Py<PyList>> {
+    let sets = decode_v8_tag_set_parts(
+        objects
+            .iter()
+            .map(|(id, primary, attributes)| (*id, primary.as_bytes(), attributes.as_bytes())),
+    );
+    let result = PyList::empty(py);
+    for set in &sets {
+        result.append(v8_tag_set_dict(py, set)?)?;
+    }
+    Ok(result.unbind())
+}
+
+fn v8_tag_set_dict<'py>(py: Python<'py>, set: &V8TagSet) -> PyResult<Bound<'py, PyDict>> {
     let result = PyDict::new(py);
     result.set_item("element_id", set.element_id)?;
     result.set_item("name", &set.name)?;
@@ -389,7 +411,7 @@ fn decode_v8_tag_set_data(
         definitions.append(value)?;
     }
     result.set_item("definitions", definitions)?;
-    Ok(Some(result.unbind()))
+    Ok(result)
 }
 
 #[pyfunction]
@@ -1786,6 +1808,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(decode_v8_item_instance_data, module)?)?;
     module.add_function(wrap_pyfunction!(decode_v8_item_instances_data, module)?)?;
     module.add_function(wrap_pyfunction!(decode_v8_tag_set_data, module)?)?;
+    module.add_function(wrap_pyfunction!(decode_v8_tag_sets_data, module)?)?;
     module.add(
         "V8_ITEM_INSTANCE_ENTRY_TYPE",
         ezdgn_core::V8_ITEM_INSTANCE_ENTRY_TYPE,

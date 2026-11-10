@@ -265,6 +265,9 @@ def decode_v8_item_instances_data(
 def decode_v8_tag_set_data(
     element_id: int, primary: bytes, attributes: bytes
 ) -> dict[str, object] | None: ...
+def decode_v8_tag_sets_data(
+    objects: list[tuple[int, bytes, bytes]]
+) -> list[dict[str, object]]: ...
 def scan_v7_records(
     data: bytes,
     max_file_size: int,
