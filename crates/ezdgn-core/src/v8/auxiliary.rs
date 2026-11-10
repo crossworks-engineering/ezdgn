@@ -21,7 +21,10 @@ pub const V8_MAX_AUXILIARY_ENTRIES: usize = 1 << 16;
 /// word that the raw record exposes as `flags` is the entry count. Each entry
 /// has a 16-byte header and a data block; the meaning of the data depends on
 /// `type_id` and stays raw here.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Two entries are equal when their position, their header words and their
+/// data are equal. The page bytes they are cut from are not compared.
+#[derive(Debug, Clone)]
 pub struct V8AuxiliaryEntry {
     /// Position of the entry within its record.
     pub index: usize,
@@ -40,6 +43,20 @@ pub struct V8AuxiliaryEntry {
     bytes: Arc<[u8]>,
     data_range: Range<usize>,
 }
+
+impl PartialEq for V8AuxiliaryEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+            && self.offset == other.offset
+            && self.type_id == other.type_id
+            && self.entry_id == other.entry_id
+            && self.size_word == other.size_word
+            && self.reserved == other.reserved
+            && self.data() == other.data()
+    }
+}
+
+impl Eq for V8AuxiliaryEntry {}
 
 impl V8AuxiliaryEntry {
     /// High half of [`Self::type_id`].
@@ -193,6 +210,32 @@ mod tests {
             (0x570b, 4)
         );
         assert_eq!(entries[2].reserved, 0);
+    }
+
+    #[test]
+    fn entries_compare_by_their_own_words_and_data() {
+        let bytes = payload(&[
+            entry(0x5709_0000, 0, false, &[1, 2, 3]),
+            entry(0x56ff_0000, 2, true, &[4, 5]),
+        ]);
+        let alone = decode_v8_auxiliary_entries(&bytes, 2).unwrap();
+        // the same payload inside a larger page with other bytes around it
+        let mut page = vec![0xaa; 7];
+        page.extend(&bytes);
+        page.extend([0xbb; 9]);
+        let in_page = split_entries(Arc::from(page), 7..7 + bytes.len(), 2).unwrap();
+        assert_eq!(alone, in_page);
+
+        let differs = |change: fn(&mut Vec<u8>)| {
+            let mut other = bytes.clone();
+            change(&mut other);
+            decode_v8_auxiliary_entries(&other, 2).unwrap() != alone
+        };
+        assert!(differs(|bytes| bytes[16] = 9)); // a data byte
+        assert!(differs(|bytes| bytes[4] = 1)); // the entry ID
+        assert!(differs(|bytes| bytes[0] = 1)); // the type word
+        assert!(differs(|bytes| bytes[12] = 1)); // the reserved word
+        assert!(differs(|bytes| bytes[11] = 0x80)); // the flag of the size word
     }
 
     #[test]
