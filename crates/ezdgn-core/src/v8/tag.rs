@@ -45,7 +45,11 @@ const HOST_LINKAGE_ROOT: [u8; 10] = [0x01, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0
 const HOST_LINKAGE_ID_OFFSET: usize = 20;
 
 /// A decoded tag value or tag default.
+///
+/// Other value types exist and are not decoded yet (type 5 was seen), so a
+/// match on this enum needs a wildcard arm.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum V8TagValue {
     Text(String),
     Integer(i32),

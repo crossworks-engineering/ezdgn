@@ -110,7 +110,9 @@ the legacy contracts.
 `V8ElementData::Tag` and `V8ElementData::SharedCellDefinition` are new
 variants of a public Rust enum: code that matches `V8ElementData` without a
 wildcard arm must add them. `DgnError::V8ModelIndexOutOfRange` is a new
-variant of the error enum in the same way. A type-37 object that is read as a
+variant of the error enum in the same way. The new enum `V8TagValue` is
+`#[non_exhaustive]`, because other tag value types exist and are not decoded
+yet. A type-37 object that is read as a
 tag has the kind `TAG` and no longer `UNKNOWN`, so Python's `unknown_elements`
 no longer lists it. Nothing else that `read_v8()` returned before changes: a
 shared-cell definition is returned only by the calls that read definitions,

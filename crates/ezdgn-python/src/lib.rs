@@ -908,7 +908,8 @@ fn set_v8_tag_value(
     match value {
         Some(V8TagValue::Text(text)) => target.set_item(key, text),
         Some(V8TagValue::Integer(number)) => target.set_item(key, *number),
-        None => target.set_item(key, target.py().None()),
+        // no value, or a value type that this binding does not know yet
+        _ => target.set_item(key, target.py().None()),
     }
 }
 
