@@ -1,0 +1,344 @@
+from __future__ import annotations
+
+import os
+import struct
+from collections import Counter
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+import ezdgn
+from ezdgn.v8 import (
+    TAG_SET_ELEMENT_TYPE,
+    V8_TAG_SET_CODE,
+    V8_TAG_VALUE_INTEGER,
+    V8_TAG_VALUE_TEXT,
+    decode_tag_set,
+    tag_set_objects,
+    tag_sets,
+)
+
+
+DATA = Path(__file__).parents[1] / "data" / "dgn"
+V8 = DATA / "v8" / "test_dgnv8.dgn"
+
+
+def _definition(
+    name: bytes,
+    tag_id: int,
+    prompt: bytes,
+    value_type: int,
+    unresolved: tuple[int, int],
+    default: bytes,
+) -> bytes:
+    """Build one tag definition by hand.
+
+    ``unresolved`` are the two words that the observed writers fill
+    differently; ``default`` is the stored default with its closing byte.
+    """
+
+    return (
+        name
+        + b"\x00"
+        + struct.pack("<H", tag_id)
+        + prompt
+        + b"\x00"
+        + struct.pack("<HHH", value_type, *unresolved)
+        + b"\x00"
+        + default
+    )
+
+
+def _name_linkage(name: bytes) -> bytes:
+    linkage = bytearray(b"\x00\x10\xd2\x56" + struct.pack("<II", 1, len(name)) + name)
+    linkage += bytes(-len(linkage) % 4)
+    linkage[0] = len(linkage) // 2 - 1
+    return bytes(linkage)
+
+
+def _primary(definitions: bytes, *, sizes: tuple[int, int] | None = None) -> bytes:
+    first, second = sizes or (len(definitions), len(definitions))
+    primary = bytearray(0x3C)
+    primary[0x28:0x30] = V8_TAG_SET_CODE
+    primary[0x34:0x3C] = struct.pack("<II", first, second)
+    primary += definitions
+    primary += bytes(len(primary) % 2)
+    return bytes(primary)
+
+
+def _named_object(
+    element_id: int | None,
+    primary: bytes,
+    attributes: bytes = b"",
+    *,
+    element_type: int = TAG_SET_ELEMENT_TYPE,
+) -> ezdgn.V8RawObject:
+    type_and_flags = 0x3000_0000 | element_type
+    raw = bytearray(primary + attributes)
+    raw[0:12] = struct.pack("<III", type_and_flags, len(raw) // 2, len(primary) // 2)
+    raw[0x10:0x18] = struct.pack("<Q", element_id or 0)
+    return ezdgn.V8RawObject(
+        index=0,
+        page_index=0,
+        family="named",
+        stream_path="/Dgn^Nm/$1",
+        inflated_offset=4,
+        framing_prefix=0,
+        type_and_flags=type_and_flags,
+        element_type=element_type,
+        role="header",
+        words=len(raw) // 2,
+        attribute_words=len(primary) // 2,
+        level=0,
+        element_id=element_id,
+        model_id=0,
+        raw_bytes=bytes(raw),
+    )
+
+
+# Two definitions as one observed writer stores them (text length and value
+# type in the unresolved words, odd total padded with a zero byte) and two as
+# the other does (default length and zero).
+DEFINITIONS = (
+    _definition(b"Variety", 1, b"Kind of pear", 1, (3, 1), b"Oak\x00")
+    + _definition(b"Yield", 2, b"", 3, (4, 3), struct.pack("<i", -7))
+    + _definition(b"Note", 3, b"Say why", 1, (1, 0), b"\x00")
+    + _definition(b"Caf\xe9", 4, b"", 1, (5, 0), b"none\x00")
+)
+EXPECTED = ezdgn.V8TagSet(
+    element_id=300,
+    name="Grove",
+    definitions=(
+        ezdgn.V8TagDefinition("Variety", 1, "Kind of pear", V8_TAG_VALUE_TEXT, "Oak"),
+        ezdgn.V8TagDefinition("Yield", 2, "", V8_TAG_VALUE_INTEGER, -7),
+        ezdgn.V8TagDefinition("Note", 3, "Say why", V8_TAG_VALUE_TEXT, ""),
+        ezdgn.V8TagDefinition("Café", 4, "", V8_TAG_VALUE_TEXT, "none"),
+    ),
+)
+
+
+def test_tag_set_decodes_from_hand_made_bytes() -> None:
+    assert len(DEFINITIONS) % 2 == 1
+    item = _named_object(300, _primary(DEFINITIONS), _name_linkage(b"Grove"))
+    assert item.primary_bytes[0x28:0x30] == b"teSt\x81\x0f\x00\x00"
+    tag_set = decode_tag_set(item)
+    assert tag_set == EXPECTED
+    assert tag_set is not None
+    assert tag_set.definition(2) == EXPECTED.definitions[1]
+    assert tag_set.definition(5) is None
+    assert (V8_TAG_VALUE_TEXT, V8_TAG_VALUE_INTEGER) == (1, 3)
+
+    # no padding after an even length; no name linkage gives an empty name
+    even = DEFINITIONS + _definition(b"X", 5, b"", 1, (0, 0), b"\x00")
+    assert len(even) % 2 == 0
+    unnamed = decode_tag_set(_named_object(301, _primary(even)))
+    assert unnamed is not None
+    assert (unnamed.element_id, unnamed.name, len(unnamed.definitions)) == (301, "", 5)
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        # another object type, and an object without an element ID
+        _named_object(1, _primary(DEFINITIONS), element_type=95),
+        _named_object(None, _primary(DEFINITIONS)),
+        # another code at 0x28
+        _named_object(1, _primary(DEFINITIONS).replace(b"teSt", b"teSu")),
+        # the two stored sizes differ; the size runs past the object
+        _named_object(1, _primary(DEFINITIONS, sizes=(len(DEFINITIONS), 0))),
+        _named_object(1, _primary(DEFINITIONS, sizes=(4096, 4096))),
+        # bytes remain after the definitions; a padding byte that is not zero
+        _named_object(1, _primary(DEFINITIONS) + b"\x00\x00"),
+        _named_object(1, _primary(DEFINITIONS)[:-1] + b"\x01"),
+        # a value type that is neither text nor integer
+        _named_object(1, _primary(_definition(b"A", 1, b"", 5, (0, 0), b"\x00"))),
+        # the byte before the default is not zero
+        _named_object(
+            1,
+            _primary(b"A\x00" + struct.pack("<H", 1) + b"\x00" + struct.pack("<HHH", 1, 0, 0) + b"\x01\x00"),
+        ),
+        # a text default without its closing byte; a short integer default
+        _named_object(1, _primary(_definition(b"A", 1, b"", 1, (0, 0), b"abc"))),
+        _named_object(1, _primary(_definition(b"A", 1, b"", 3, (0, 0), b"\x01\x00"))),
+        # truncated inside the fixed head
+        _named_object(1, _primary(DEFINITIONS)[:0x38]),
+    ],
+)
+def test_tag_sets_that_do_not_match_the_layout_stay_raw(item: ezdgn.V8RawObject) -> None:
+    assert decode_tag_set(item) is None
+
+
+def test_tag_sets_of_a_document_are_decoded_on_request() -> None:
+    document = ezdgn.read_v8(V8)
+    # the checked-in fixture holds no tag set
+    assert tag_set_objects(document.raw) == ()
+    assert document.tag_sets == ()
+    assert all(
+        element.kind != "TAG" and not isinstance(element.data, ezdgn.V8TagData)
+        for model in document.models
+        for element in model.elements
+    )
+
+    good = _named_object(300, _primary(DEFINITIONS), _name_linkage(b"Grove"))
+    undecodable = _named_object(
+        301, _primary(_definition(b"A", 1, b"", 5, (0, 0), b"\x00"))
+    )
+    # the bytes of a tag set under another code, and under another type
+    other_code = _named_object(302, _primary(DEFINITIONS).replace(b"teSt", b"teSu"))
+    other_type = _named_object(303, _primary(DEFINITIONS), element_type=95)
+    page = document.raw.named_pages[0]
+    raw = replace(
+        document.raw,
+        named_pages=(
+            replace(
+                page,
+                objects=(*page.objects, other_code, good, other_type, undecodable),
+            ),
+        ),
+    )
+    assert tag_set_objects(raw) == (good, undecodable)
+    assert tag_sets(raw) == (EXPECTED,)
+    with_sets = replace(document, raw=raw)
+    assert with_sets.tag_sets == (EXPECTED,)
+    assert with_sets.tag_set(300) == EXPECTED
+    assert with_sets.tag_set(301) is None
+    assert with_sets.tag_set(None) is None
+
+
+def test_a_tag_element_is_not_drawable_and_keeps_its_fields_in_the_cli_payload() -> None:
+    import json
+
+    from ezdgn.__main__ import _v8_entity_payload
+
+    document = ezdgn.read_v8(V8)
+    model = document.models[0]
+    tag = replace(
+        model.elements[0],
+        index=0,
+        parent_index=None,
+        child_indices=(),
+        data=ezdgn.V8TagData(
+            kind="TAG",
+            tag_id=1,
+            value_type=V8_TAG_VALUE_TEXT,
+            value_bytes=b"Oak\x00",
+            value="Oak",
+            tag_set_element_id=300,
+            host_element_id=800,
+            origin=ezdgn.V8Point(uor=(9050.0, -100.0, 0.0), master=(9.05, -0.1, 0.0)),
+        ),
+    )
+    assert not tag.is_drawable
+    tagged = replace(model, elements=(tag,))
+    assert tagged.entities == ()
+    assert tagged.unknown_elements == ()
+    assert json.loads(json.dumps(_v8_entity_payload(tag))) == {
+        "kind": "TAG",
+        "origin_uor": [9050.0, -100.0, 0.0],
+        "origin_master": [9.05, -0.1, 0.0],
+        "tag_id": 1,
+        "value_type": 1,
+        "value": "Oak",
+        "tag_set_element_id": 300,
+        "host_element_id": 800,
+        "value_hex": "4f616b00",
+    }
+
+
+# The checks below read a public file that the repository does not
+# redistribute: the "Tree text-node labels with tags" support example recorded
+# in docs/v8/PROVENANCE.md. Set EZDGN_PUBLIC_V8_DIR to the folder that holds it.
+PUBLIC_DIR = os.environ.get("EZDGN_PUBLIC_V8_DIR")
+TREE_TAGS = "TreeTextNodeLabelsWithTags.dgn"
+TREE_TAGS_SHA256 = "8439e6d3a18227122c10c5367799561ebe94737d9d27932f4eb89d743b108270"
+
+
+@pytest.mark.skipif(
+    not PUBLIC_DIR or not (Path(PUBLIC_DIR or ".") / TREE_TAGS).is_file(),
+    reason="set EZDGN_PUBLIC_V8_DIR to a folder with the public tree tags file",
+)
+def test_public_tree_tags() -> None:
+    import hashlib
+
+    path = Path(PUBLIC_DIR or ".") / TREE_TAGS
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == TREE_TAGS_SHA256
+    document = ezdgn.read_v8(path)
+    (model,) = document.models
+    assert Counter(element.kind for element in model.elements) == {
+        "TEXT_NODE": 6_904,
+        "TEXT": 12_623,
+        "TAG": 13_808,
+    }
+    # the feature view is unchanged: a tag is not an entity
+    assert len(model.entities) == 12_623
+    assert model.unknown_elements == ()
+
+    (tag_set,) = document.tag_sets
+    assert tag_set_objects(document.raw) == (
+        next(
+            item
+            for page in document.raw.named_pages
+            for item in page.objects
+            if item.element_id == tag_set.element_id
+        ),
+    )
+    assert tag_set == ezdgn.V8TagSet(
+        element_id=110,
+        name="Trees",
+        definitions=(
+            ezdgn.V8TagDefinition("Species", 1, "Enter value", 1, "Default Value"),
+            ezdgn.V8TagDefinition("Tree Count", 2, "Enter value", 3, 0),
+        ),
+    )
+
+    tags = [element for element in model.elements if element.kind == "TAG"]
+    assert all(element.is_top_level and not element.is_drawable for element in tags)
+    # only a tag carries the tag fields
+    assert all(
+        isinstance(element.data, ezdgn.V8TagData) == (element.kind == "TAG")
+        for element in model.elements
+    )
+    assert Counter(
+        (element.data.tag_id, element.data.value_type, type(element.data.value))
+        for element in tags
+    ) == {(1, 1, str): 6_904, (2, 3, int): 6_904}
+    # every tag names the one set, and its ID is defined there with its type
+    assert {element.data.tag_set_element_id for element in tags} == {110}
+    assert all(
+        tag_set.definition(element.data.tag_id).value_type == element.data.value_type
+        for element in tags
+    )
+    assert all(
+        element.data.value_bytes
+        == (
+            element.data.value.encode("ascii") + b"\x00"
+            if isinstance(element.data.value, str)
+            else struct.pack("<i", element.data.value)
+        )
+        for element in tags
+    )
+    first, second = tags[:2]
+    assert (first.data.value, second.data.value) == ("Euchlora   X", 1)
+    counts = [element.data.value for element in tags if element.data.value_type == 3]
+    assert (min(counts), max(counts)) == (1, 58)
+
+    # each text node hosts one tag of each definition
+    by_id = {element.common.element_id: element for element in model.elements}
+    hosts = [by_id[element.data.host_element_id] for element in tags]
+    assert {host.kind for host in hosts} == {"TEXT_NODE"}
+    assert Counter(Counter(host.index for host in hosts).values()) == {2: 6_904}
+    # The first stored pair is the origin of the host. The second pair is a
+    # fixed step for each definition. The stored range of every tag is the
+    # single point (0, 0), so no origin is given.
+    assert all(
+        struct.unpack_from("<2d", element.raw.primary_bytes, 0xA0)
+        == host.data.origin.uor[:2]
+        for element, host in zip(tags, hosts, strict=True)
+    )
+    assert Counter(
+        (element.data.tag_id, struct.unpack_from("<2d", element.raw.primary_bytes, 0xB8))
+        for element in tags
+    ) == {(1, (0.0, -10.0)): 6_904, (2, (0.0, -20.0)): 6_904}
+    assert {element.common.range_uor for element in tags} == {((0, 0, 0), (0, 0, 0))}
+    assert all(element.data.origin is None for element in tags)

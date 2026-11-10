@@ -10,6 +10,7 @@ use super::metadata::{
     V8Range3I64,
 };
 use super::raw::{read_u16, read_u32, read_u64};
+use super::tag::{decode_tag_fields, decode_v8_tag_sets, V8TagSet, V8TagValue};
 use super::{
     scan_v8_objects, V8AuxiliaryRecord, V8ObjectRole, V8RawDocument, V8RawObject, V8ScanOptions,
 };
@@ -27,6 +28,7 @@ const SHARED_CELL_DEFINITION_BYTES: usize = 0x100;
 const SHARED_CELL_VALUES_OFFSET: usize = 0x70;
 const SHARED_CELL_VALUE_COUNT: usize = 15;
 const SHARED_CELL_RANGE_VALUES: usize = 6;
+const TAG_ELEMENT_TYPE: u16 = 37;
 const TEXT_MULTIPLIER_TO_UOR: f64 = 6.0 / 1000.0;
 
 /// Display and identity fields shared by standard V8 graphical objects.
@@ -194,6 +196,21 @@ pub enum V8ElementData {
     Dimension {
         anchor: Option<V8Point>,
     },
+    /// A tag: one value of a tag set, attached to a host element or free.
+    ///
+    /// `value` is decoded for text and integer values only; `value_bytes`
+    /// always holds the stored bytes. `tag_set_element_id` names the tag set
+    /// and `tag_id` the definition in it. `origin` is the stored placement
+    /// point, given only when it lies inside the element's own range.
+    Tag {
+        tag_id: u16,
+        value_type: u16,
+        value_bytes: Arc<[u8]>,
+        value: Option<V8TagValue>,
+        tag_set_element_id: Option<u64>,
+        host_element_id: Option<u64>,
+        origin: Option<V8Point>,
+    },
     Mesh {
         child_count: usize,
         style: u32,
@@ -237,6 +254,7 @@ impl V8ElementData {
             Self::BSplineCurve { .. } => "BSPLINE_CURVE",
             Self::BSplinePole { .. } => "BSPLINE_POLE",
             Self::Dimension { .. } => "DIMENSION",
+            Self::Tag { .. } => "TAG",
             Self::Mesh { .. } => "MESH",
             Self::MatrixHeader { .. } => "MATRIX_HEADER",
             Self::MatrixIntegerData { .. } => "MATRIX_INTEGER_DATA",
@@ -269,6 +287,7 @@ impl V8ElementData {
             Self::Unknown
                 | Self::UnknownComplex { .. }
                 | Self::SharedCellDefinition { .. }
+                | Self::Tag { .. }
                 | Self::BSplinePole { .. }
                 | Self::TextNode { .. }
                 | Self::MatrixHeader { .. }
@@ -545,6 +564,13 @@ impl V8Document {
             .ok_or_else(|| missing_model(model_index))?;
         decode_v8_shared_cell_definitions(&self.raw, &model.metadata, options)
     }
+
+    /// The tag sets of the document, decoded on each call. A tag set that
+    /// does not match the observed layout is not listed and stays raw.
+    #[must_use]
+    pub fn tag_sets(&self) -> Vec<V8TagSet> {
+        decode_v8_tag_sets(&self.raw)
+    }
 }
 
 /// Scan and semantically decode supported V8 models and graphical elements.
@@ -752,6 +778,11 @@ fn decode_element(
         }
         35 => decode_shared_cell(raw, metadata, linkages),
         36 => decode_dimension(raw, common, metadata),
+        TAG_ELEMENT_TYPE
+            if !raw.role.is_header() && common.stored_dimension == V8Dimension::Two =>
+        {
+            decode_tag(raw, common, metadata, linkages, options)
+        }
         101 => decode_matrix_header(raw),
         102 => decode_matrix_values(raw, options, MATRIX_INTEGER_BYTES, |bytes, offset| {
             read_i32(bytes, offset).map(Ok)
@@ -1204,6 +1235,51 @@ fn decode_dimension(
         _ => None,
     };
     Ok(V8ElementData::Dimension { anchor })
+}
+
+/// A tag whose stored value does not fit the primary bytes stays unknown.
+/// The placement point is kept only when it lies inside the stored range.
+fn decode_tag(
+    raw: &V8RawObject,
+    common: &V8CommonHeader,
+    metadata: &V8ModelMetadata,
+    linkages: &[V8Linkage],
+    options: V8ScanOptions,
+) -> Result<V8ElementData, DgnError> {
+    let Some(tag) = decode_tag_fields(raw.primary_bytes(), linkages) else {
+        return Ok(V8ElementData::Unknown);
+    };
+    if tag.value_bytes.len() > options.max_string_bytes {
+        return Err(DgnError::V8StringLimitExceeded {
+            context: format!("tag element {}", common.element_id),
+            actual: tag.value_bytes.len(),
+            limit: options.max_string_bytes,
+        });
+    }
+    let range = common.range_uor;
+    let origin = tag
+        .placement_uor
+        .filter(|point| {
+            (0..2).all(|axis| {
+                range.low[axis] as f64 <= point[axis] && point[axis] <= range.high[axis] as f64
+            })
+        })
+        .map(|point| {
+            let uor = V8Point3::new(point[0], point[1], 0.0);
+            V8Point {
+                uor,
+                master: metadata.to_master(uor),
+            }
+        });
+    Ok(V8ElementData::Tag {
+        tag_id: tag.tag_id,
+        value_type: tag.value_type,
+        value_bytes: tag.value_bytes,
+        value: tag.value,
+        tag_set_element_id: tag.tag_set_element_id,
+        host_element_id: tag.host_element_id,
+        origin,
+    })
 }
 
 fn decode_shared_cell_definition(
@@ -1659,7 +1735,11 @@ mod tests {
         auxiliary_record, dgn_with_objects, dgn_with_objects_and_auxiliary, dgn_with_pages,
         MODEL_ID,
     };
+    use crate::v8::tag::test_support::{
+        definition_bytes, host_linkage, tag_primary, tag_set_linkage, tag_set_primary, TagParts,
+    };
     use crate::v8::V8_ITEM_INSTANCE_ENTRY_TYPE;
+    use crate::v8::{V8TagValue, V8_TAG_VALUE_INTEGER, V8_TAG_VALUE_TEXT};
 
     const MODEL_HEADER_TYPE: u32 = 66;
     const MODEL_HEADER_BYTES: usize = 0xe8;
@@ -2292,6 +2372,414 @@ mod tests {
             read_v8_shared_cell_definitions(&dgn, options, 0),
             Err(DgnError::V8HierarchyDepthLimitExceeded { .. })
         ));
+    }
+
+    const STANDALONE_TAG: u32 = 0x1000_0025;
+    const COMPONENT_TAG: u32 = 0x5000_0025;
+    const GROVE_SET_ID: u64 = 300;
+    const HOST_ID: u64 = 800;
+
+    /// A complete tag object: the common header with its range (low X, low
+    /// Y, high X, high Y), the tag fields, then the linkages.
+    fn tag_record(
+        type_and_flags: u32,
+        id: u64,
+        range: [i64; 4],
+        parts: &TagParts<'_>,
+        attributes: &[u8],
+    ) -> Vec<u8> {
+        let mut record = tag_primary(parts);
+        write_u32(&mut record, 0, type_and_flags);
+        write_u32(&mut record, 0x0c, 64);
+        write_u64(&mut record, 0x10, id);
+        write_u64(&mut record, 0x18, MODEL_ID);
+        // the header stores the low corner and the extent
+        for (offset, value) in [
+            (0x38, range[0]),
+            (0x40, range[1]),
+            (0x50, range[2] - range[0]),
+            (0x58, range[3] - range[1]),
+        ] {
+            record[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        let primary_words = (record.len() / 2) as u32;
+        record.extend(attributes);
+        let words = (record.len() / 2) as u32;
+        write_u32(&mut record, 4, words);
+        write_u32(&mut record, 8, primary_words);
+        record
+    }
+
+    fn tag_set_record(id: u64, name: &str, definitions: &[u8]) -> Vec<u8> {
+        let mut record = tag_set_primary(definitions);
+        write_u32(&mut record, 0, 0x3000_0027);
+        write_u64(&mut record, 0x10, id);
+        with_name(record, name)
+    }
+
+    fn grove_definitions() -> Vec<u8> {
+        [
+            definition_bytes("Variety", 1, "Kind of pear", 1, [3, 1], b"Oak\0"),
+            definition_bytes("Yield", 2, "", 3, [4, 3], &0_i32.to_le_bytes()),
+        ]
+        .concat()
+    }
+
+    fn tagged_named_objects() -> Vec<Vec<u8>> {
+        // the bytes of a tag set under another code, and under another type
+        let mut other_code = tag_set_record(302, "Else", &grove_definitions());
+        other_code[0x28] = b'x';
+        let mut other_type = tag_set_record(303, "Else", &grove_definitions());
+        write_u32(&mut other_type, 0, 0x3000_005f);
+        vec![
+            other_named_object(10),
+            other_code,
+            other_type,
+            tag_set_record(GROVE_SET_ID, "Grove", &grove_definitions()),
+            // a definition of another value type: the set stays raw
+            tag_set_record(
+                301,
+                "Other",
+                &definition_bytes("Shape", 1, "", 5, [0, 0], b"\0"),
+            ),
+            definition_header(20, "CELL_A", 2, SMALL),
+            line_component(21, [0.0, 0.0], [2000.0, 1000.0]),
+            tag_record(
+                COMPONENT_TAG,
+                22,
+                [0, 0, 600, 200],
+                &TagParts {
+                    value: b"Elm\0",
+                    anchor: [300.0, 100.0],
+                    ..TagParts::default()
+                },
+                &tag_set_linkage(GROVE_SET_ID),
+            ),
+        ]
+    }
+
+    fn tagged_model_objects() -> Vec<Vec<u8>> {
+        let host = named_instance("CELL_A", SMALL, IDENTITY, [900.0, 100.0, 0.0]);
+        let both = [tag_set_linkage(GROVE_SET_ID), host_linkage(HOST_ID, [2, 9])].concat();
+        let mut in_3d = tag_record(
+            STANDALONE_TAG,
+            904,
+            [0, 0, 10, 10],
+            &TagParts::default(),
+            &tag_set_linkage(GROVE_SET_ID),
+        );
+        write_u32(&mut in_3d, 0x28, ELEMENT_3D_FLAG);
+        let mut too_long = tag_record(
+            STANDALONE_TAG,
+            906,
+            [0, 0, 10, 10],
+            &TagParts::default(),
+            &[],
+        );
+        write_u32(&mut too_long, 0x138, 3);
+        vec![
+            host,
+            // attached to the host: the first pair is the host origin, the
+            // second pair the way from there to the tag
+            tag_record(
+                STANDALONE_TAG,
+                901,
+                [900, -150, 990, -50],
+                &TagParts {
+                    value: b"Oak\0",
+                    anchor: [900.0, 100.0],
+                    offset: [60.0, -200.0],
+                    trailer: &[1; 10],
+                    code_page: 1252,
+                    ..TagParts::default()
+                },
+                &both,
+            ),
+            // free, with a range that is the single point (0, 0)
+            tag_record(
+                STANDALONE_TAG,
+                902,
+                [0, 0, 0, 0],
+                &TagParts {
+                    tag_id: 2,
+                    value_type: V8_TAG_VALUE_INTEGER,
+                    value: &42_i32.to_le_bytes(),
+                    anchor: [100.0, 200.0],
+                    ..TagParts::default()
+                },
+                &tag_set_linkage(GROVE_SET_ID),
+            ),
+            // a value type that is not decoded, and no known linkage
+            tag_record(
+                STANDALONE_TAG,
+                903,
+                [0, 0, 10, 10],
+                &TagParts {
+                    value_type: 5,
+                    value: &[1, 2, 3],
+                    ..TagParts::default()
+                },
+                &[],
+            ),
+            in_3d,
+            tag_record(0x3000_0025, 905, [0, 0, 10, 10], &TagParts::default(), &[]),
+            too_long,
+        ]
+    }
+
+    fn tagged_dgn() -> Vec<u8> {
+        dgn_with_pages(
+            &model_header(),
+            &tagged_model_objects(),
+            &[],
+            &tagged_named_objects(),
+        )
+    }
+
+    #[test]
+    fn tags_are_read_with_their_value_their_set_and_their_host() {
+        let document = read_v8(&tagged_dgn(), V8ScanOptions::default()).unwrap();
+        let model = &document.models[0];
+        assert_eq!(
+            model
+                .elements
+                .iter()
+                .map(V8Element::kind)
+                .collect::<Vec<_>>(),
+            [
+                "SHARED_CELL_INSTANCE",
+                "TAG",
+                "TAG",
+                "TAG",
+                "UNKNOWN",
+                "UNKNOWN_COMPLEX",
+                "UNKNOWN"
+            ]
+        );
+        // a tag is not a drawable entity
+        assert!(model.elements[1..4]
+            .iter()
+            .all(|element| !element.data.is_drawable()));
+        assert_eq!(model.entities().count(), 1);
+        assert_eq!(model.all_drawable_elements().count(), 1);
+
+        assert_eq!(
+            model.elements[1].data,
+            V8ElementData::Tag {
+                tag_id: 1,
+                value_type: V8_TAG_VALUE_TEXT,
+                value_bytes: Arc::from(&b"Oak\0"[..]),
+                value: Some(V8TagValue::Text("Oak".to_owned())),
+                tag_set_element_id: Some(GROVE_SET_ID),
+                host_element_id: Some(HOST_ID),
+                // the sum of the two stored pairs, inside the stored range
+                origin: Some(V8Point {
+                    uor: V8Point3::new(960.0, -100.0, 0.0),
+                    master: V8Point3::new(0.96, -0.1, 0.0),
+                }),
+            }
+        );
+        assert_eq!(model.elements[0].common.element_id, HOST_ID);
+        assert_eq!(
+            model.elements[2].data,
+            V8ElementData::Tag {
+                tag_id: 2,
+                value_type: V8_TAG_VALUE_INTEGER,
+                value_bytes: Arc::from(&[42, 0, 0, 0][..]),
+                value: Some(V8TagValue::Integer(42)),
+                tag_set_element_id: Some(GROVE_SET_ID),
+                host_element_id: None,
+                // (100, 200) is outside the stored range: no origin
+                origin: None,
+            }
+        );
+        assert_eq!(
+            model.elements[3].data,
+            V8ElementData::Tag {
+                tag_id: 1,
+                value_type: 5,
+                value_bytes: Arc::from(&[1, 2, 3][..]),
+                value: None,
+                tag_set_element_id: None,
+                host_element_id: None,
+                origin: Some(V8Point {
+                    uor: V8Point3::new(0.0, 0.0, 0.0),
+                    master: V8Point3::new(0.0, 0.0, 0.0),
+                }),
+            }
+        );
+
+        // the sets are decoded on request; the one that does not decode stays raw
+        let sets = document.tag_sets();
+        assert_eq!(
+            sets.iter()
+                .map(|set| (set.element_id, set.name.as_str(), set.definitions.len()))
+                .collect::<Vec<_>>(),
+            [(GROVE_SET_ID, "Grove", 2)]
+        );
+        assert_eq!(
+            document
+                .raw
+                .tag_set_objects()
+                .map(|object| object.element_id)
+                .collect::<Vec<_>>(),
+            [Some(GROVE_SET_ID), Some(301)]
+        );
+        assert_eq!(crate::v8::decode_v8_tag_sets(&document.raw), sets);
+        for other in &document.raw.named_pages[0].objects[..3] {
+            assert!(crate::v8::decode_v8_tag_set(other).is_none());
+        }
+        // each decoded tag names a definition of its set, with its value type
+        for element in &model.elements[1..3] {
+            let V8ElementData::Tag {
+                tag_id,
+                value_type,
+                tag_set_element_id,
+                ..
+            } = &element.data
+            else {
+                unreachable!();
+            };
+            let set = sets
+                .iter()
+                .find(|set| Some(set.element_id) == *tag_set_element_id)
+                .unwrap();
+            assert_eq!(set.definition(*tag_id).unwrap().value_type, *value_type);
+        }
+
+        // a tag inside a shared-cell definition is a component of it
+        let definitions = document
+            .shared_cell_definitions(0, V8ScanOptions::default())
+            .unwrap();
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(
+            definitions[0]
+                .elements
+                .iter()
+                .map(|element| (element.kind(), element.parent_index))
+                .collect::<Vec<_>>(),
+            [
+                ("SHARED_CELL_DEFINITION", None),
+                ("LINE", Some(0)),
+                ("TAG", Some(0))
+            ]
+        );
+        let V8ElementData::Tag { value, origin, .. } = &definitions[0].elements[2].data else {
+            unreachable!();
+        };
+        assert_eq!(*value, Some(V8TagValue::Text("Elm".to_owned())));
+        assert_eq!(origin.unwrap().uor, V8Point3::new(300.0, 100.0, 0.0));
+    }
+
+    #[test]
+    fn a_tag_origin_is_given_only_inside_the_stored_range() {
+        let origin = |range: [i64; 4], anchor: [f64; 2], offset: [f64; 2]| {
+            let parts = TagParts {
+                anchor,
+                offset,
+                ..TagParts::default()
+            };
+            let dgn = dgn_with_objects(
+                &model_header(),
+                &[tag_record(STANDALONE_TAG, 900, range, &parts, &[])],
+            );
+            let document = read_v8(&dgn, V8ScanOptions::default()).unwrap();
+            let V8ElementData::Tag { origin, .. } = &document.models[0].elements[0].data else {
+                panic!("expected a tag");
+            };
+            origin.map(|point| (point.uor.x, point.uor.y))
+        };
+        let range = [-500, 100, 500, 300];
+        // the corners belong to the range
+        assert_eq!(
+            origin(range, [-500.0, 100.0], [0.0, 0.0]),
+            Some((-500.0, 100.0))
+        );
+        assert_eq!(
+            origin(range, [0.0, 0.0], [500.0, 300.0]),
+            Some((500.0, 300.0))
+        );
+        assert_eq!(
+            origin(range, [400.0, 400.0], [50.0, -150.0]),
+            Some((450.0, 250.0))
+        );
+        // one of the two values is outside
+        assert_eq!(origin(range, [-501.0, 100.0], [0.0, 0.0]), None);
+        assert_eq!(origin(range, [500.5, 100.0], [0.0, 0.0]), None);
+        assert_eq!(origin(range, [0.0, 99.0], [0.0, 0.0]), None);
+        assert_eq!(origin(range, [0.0, 200.0], [0.0, 101.0]), None);
+        // the first pair alone is inside, the sum is not
+        assert_eq!(origin(range, [0.0, 200.0], [600.0, 0.0]), None);
+        assert_eq!(origin(range, [f64::NAN, 200.0], [0.0, 0.0]), None);
+    }
+
+    #[test]
+    fn a_tag_value_obeys_the_string_limit() {
+        let parts = TagParts {
+            value: b"Oak\0",
+            ..TagParts::default()
+        };
+        let dgn = dgn_with_objects(
+            &model_header(),
+            &[tag_record(STANDALONE_TAG, 900, [0, 0, 0, 0], &parts, &[])],
+        );
+        let read = |max_string_bytes| {
+            read_v8(
+                &dgn,
+                V8ScanOptions {
+                    max_string_bytes,
+                    ..V8ScanOptions::default()
+                },
+            )
+        };
+        assert_eq!(read(4).unwrap().models[0].elements[0].kind(), "TAG");
+        match read(3) {
+            Err(DgnError::V8StringLimitExceeded {
+                context,
+                actual,
+                limit,
+            }) => assert_eq!((context.as_str(), actual, limit), ("tag element 900", 4, 3)),
+            other => panic!("expected a string limit error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_prefix_and_mutation_of_a_file_with_tags_is_panic_free() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let read = |dgn: &[u8]| {
+            if let Ok(document) = read_v8(dgn, V8ScanOptions::default()) {
+                let _ = document.tag_sets();
+                let _ = document.shared_cell_definitions(0, V8ScanOptions::default());
+            }
+        };
+        let model = tagged_model_objects();
+        let named = tagged_named_objects();
+        for (in_model, objects) in [(true, &model), (false, &named)] {
+            for object in 0..objects.len() {
+                for offset in (0..objects[object].len()).step_by(3) {
+                    for value in [0x00, 0x7f, 0xff] {
+                        let mut mutated = objects.clone();
+                        mutated[object][offset] = value;
+                        let dgn = if in_model {
+                            dgn_with_pages(&model_header(), &mutated, &[], &named)
+                        } else {
+                            dgn_with_pages(&model_header(), &model, &[], &mutated)
+                        };
+                        let outcome = catch_unwind(AssertUnwindSafe(|| read(&dgn)));
+                        assert!(
+                            outcome.is_ok(),
+                            "panic at object {object} offset {offset} (model: {in_model})"
+                        );
+                    }
+                }
+            }
+        }
+        let dgn = tagged_dgn();
+        for end in (0..=dgn.len()).step_by(7) {
+            let outcome = catch_unwind(AssertUnwindSafe(|| read(&dgn[..end])));
+            assert!(outcome.is_ok(), "panic at prefix {end}");
+        }
     }
 
     #[test]

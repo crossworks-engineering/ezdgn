@@ -31,6 +31,7 @@ from . import (
     TextNode,
     V8Document,
     V8Element,
+    V8TagData,
     __version__,
     detect_format,
     inspect_headers,
@@ -394,8 +395,13 @@ def _v8_entity_payload(element: V8Element) -> dict[str, Any]:
         "text",
         "style",
         "columns",
+        "tag_id",
+        "value_type",
+        "value",
+        "tag_set_element_id",
+        "host_element_id",
     ):
-        value = getattr(data, name)
+        value = getattr(data, name, None)
         if value is not None:
             payload[name] = value
     if data.orientation:
@@ -406,6 +412,8 @@ def _v8_entity_payload(element: V8Element) -> dict[str, Any]:
         payload["transform"] = data.transform
     if data.text_bytes is not None:
         payload["text_hex"] = data.text_bytes.hex()
+    if isinstance(data, V8TagData) and data.value_bytes is not None:
+        payload["value_hex"] = data.value_bytes.hex()
     return payload
 
 

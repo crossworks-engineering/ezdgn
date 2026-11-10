@@ -13,6 +13,7 @@ mod linkage;
 mod metadata;
 mod raw;
 mod stream;
+mod tag;
 
 pub use auxiliary::{decode_v8_auxiliary_entries, V8AuxiliaryEntry};
 pub use container::{
@@ -40,4 +41,8 @@ pub use raw::{
 pub use stream::{
     read_v8_stream, read_v8_streams, V8ReadOptions, V8Stream, V8StreamSet,
     DEFAULT_MAX_CFB_STREAM_SIZE_BYTES, DEFAULT_MAX_CFB_TOTAL_STREAM_BYTES,
+};
+pub use tag::{
+    decode_v8_tag_set, decode_v8_tag_set_data, decode_v8_tag_sets, V8TagDefinition, V8TagSet,
+    V8TagValue, V8_TAG_SET_CODE, V8_TAG_VALUE_INTEGER, V8_TAG_VALUE_TEXT,
 };

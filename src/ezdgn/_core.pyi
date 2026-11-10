@@ -16,6 +16,9 @@ DEFAULT_MAX_V8_STRING_BYTES: Final[int]
 DEFAULT_MAX_V8_VERTICES: Final[int]
 DEFAULT_MAX_V8_HIERARCHY_DEPTH: Final[int]
 V8_ITEM_INSTANCE_ENTRY_TYPE: Final[int]
+V8_TAG_SET_CODE: Final[bytes]
+V8_TAG_VALUE_TEXT: Final[int]
+V8_TAG_VALUE_INTEGER: Final[int]
 
 class DgnError(Exception): ...
 class InvalidDgnError(DgnError): ...
@@ -252,6 +255,9 @@ def decode_v8_auxiliary_payload(
 ) -> list[dict[str, object]] | None: ...
 def decode_v8_item_instance_data(
     entry_id: int, data: bytes
+) -> dict[str, object] | None: ...
+def decode_v8_tag_set_data(
+    element_id: int, primary: bytes, attributes: bytes
 ) -> dict[str, object] | None: ...
 def scan_v7_records(
     data: bytes,

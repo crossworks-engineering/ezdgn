@@ -73,11 +73,21 @@ inputs and are not redistributed by this repository.
   master/sub units `m` / `m`, 33,335 graphical objects, 6,904 text-node
   headers, 12,623 text children in the feature view, and 13,808 unknown raw
   objects.
+- Tag observation (2026-11-10, same bytes and hash): the 13,808 objects are
+  type-37 tag elements and all decode, 6,904 with a text value and 6,904 with
+  an integer value. The one tag set of the file decodes with two definitions,
+  and every tag names it, an ID defined in it, and a text-node header as its
+  host. This file is the public evidence for the tag element and tag set
+  layouts in `FORMAT_NOTES.md`. It does not exercise text bytes above `0x7f`,
+  tags without a host, tags inside shared-cell definitions, or the origin of
+  a tag; `FORMAT_NOTES.md` states the evidence for those.
+  `tests/python/test_v8_tags.py` reads the file when `EZDGN_PUBLIC_V8_DIR`
+  names a folder that holds it and skips otherwise.
 
 The descriptions and supplied application context are not treated as byte
 layout documentation. The files demonstrate that the model/page/object rules
-and text-node feature policy work beyond the GDAL baseline. Unknown custom or
-tag data remains raw unless independently characterized.
+and text-node feature policy work beyond the GDAL baseline. Unknown custom
+data remains raw unless independently characterized.
 
 ### Real-world files that are not redistributed
 
@@ -86,7 +96,9 @@ real-world production files held by a contributor (85 2D files and five 3D
 files converted from DWG). They are not public, are not part of this
 repository, and no byte, name or text from them is recorded here. Only counts
 are reported, in `FORMAT_NOTES.md`. Rules that only these files exercise are
-marked there as such and are covered by constructed test bytes.
+marked there as such and are covered by constructed test bytes. The tag
+element and tag set layouts were run on the same 90 files under the same
+terms (2026-11-10).
 
 ### Repository observations
 

@@ -261,6 +261,25 @@ fn the_fixture_shared_cell_instance_finds_and_places_its_definition() {
 }
 
 #[test]
+fn the_fixture_holds_no_tag_set_and_its_one_3d_type_37_object_stays_unknown() {
+    let document = read_v8(V8, V8ScanOptions::default()).unwrap();
+    assert!(document.tag_sets().is_empty());
+    assert_eq!(document.raw.tag_set_objects().count(), 0);
+    let objects = document.models[0]
+        .elements
+        .iter()
+        .filter(|element| element.raw.element_type == 37)
+        .collect::<Vec<_>>();
+    assert_eq!(objects.len(), 1);
+    // Tag elements are read in 2D only. This object is stored as 3D, names
+    // no tag set and no host, and holds tag ID 0.
+    let object = objects[0];
+    assert_eq!(object.common.stored_dimension, V8Dimension::Three);
+    assert_eq!((object.kind(), object.linkages.len()), ("UNKNOWN", 0));
+    assert_eq!(object.raw.primary_bytes()[0xd0..0xd4], [0, 0, 3, 0]);
+}
+
+#[test]
 fn stored_3d_texts_ellipses_and_arcs_expose_a_quaternion() {
     let document = read_v8(V8, V8ScanOptions::default()).unwrap();
     let mut texts = Vec::new();
