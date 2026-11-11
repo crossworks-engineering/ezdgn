@@ -278,6 +278,9 @@ stored bytes. One read of `element.item_instances` decodes at most
 `ezdgn.v8.V8_MAX_ITEM_BYTES` stored bytes of item data;
 `ezdgn.v8.decode_item_instances(element.auxiliary_records)` returns the same
 instances and the number of item entries that this limit left raw.
+`ezdgn inspect --entities --json` writes each string of an instance once, in
+`strings`, and gives the class name and each name and value as a position in
+that list.
 
 A tag is a `TAG` element. It is not part of `entities`; find tags in
 `model.elements`:

@@ -40,7 +40,7 @@ from . import (
     read_v8,
 )
 from .metadata import CommonElementHeader, DesignSettings
-from .v8 import decode_item_instances
+from .v8 import V8ItemInstance, decode_item_instances
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -318,14 +318,7 @@ def _inspect_v8(
                     items = decode_item_instances(element.auxiliary_records)
                     if items.instances:
                         record["item_instances"] = [
-                            {
-                                "entry_id": item.entry_id,
-                                "schema_element_id": item.schema_element_id,
-                                "class_name": item.class_name,
-                                "attributes": [list(pair) for pair in item.attributes],
-                                "properties": [list(pair) for pair in item.properties],
-                            }
-                            for item in items.instances
+                            _v8_item_payload(item) for item in items.instances
                         ]
                     if items.over_limit:
                         record["item_entries_over_limit"] = items.over_limit
@@ -334,6 +327,36 @@ def _inspect_v8(
         models.append(payload)
     result["v8_models"] = models
     return result
+
+
+def _v8_item_payload(item: V8ItemInstance) -> dict[str, Any]:
+    """One item instance, with each of its strings written once.
+
+    ``strings`` lists the strings in the order of first use. ``class_name``
+    and the name and the value of each attribute and property are positions
+    in that list. A stored instance can name one long string any number of
+    times, so text written out for each use could make the output hundreds
+    of times larger than the file. With positions, the output and the memory
+    of a run stay within a fixed multiple of the stored bytes.
+    """
+
+    positions: dict[str, int] = {}
+
+    def position(text: str) -> int:
+        return positions.setdefault(text, len(positions))
+
+    return {
+        "entry_id": item.entry_id,
+        "schema_element_id": item.schema_element_id,
+        "class_name": position(item.class_name),
+        "attributes": [
+            (position(name), position(value)) for name, value in item.attributes
+        ],
+        "properties": [
+            (position(name), position(value)) for name, value in item.properties
+        ],
+        "strings": list(positions),
+    }
 
 
 def _v8_common_payload(element: V8Element) -> dict[str, Any]:

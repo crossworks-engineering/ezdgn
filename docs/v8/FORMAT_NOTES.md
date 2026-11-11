@@ -562,7 +562,12 @@ The decoder accepts only what was observed and decodes nothing else:
   to one element, so the item data of all elements together is at most the
   inflated bytes of the file, which `max_total_inflated_bytes` holds. A
   caller that keeps the item data of every element holds at most 8 times
-  (Rust) or 16 times (Python) those bytes.
+  (Rust) or 16 times (Python) those bytes. `ezdgn inspect --entities --json`
+  writes each string of an instance once and gives every use as a position
+  in that list, so its output and its memory follow the same rule: in a test
+  with 1,160 elements whose item data names 154 bytes of text for each
+  stored byte, the output for the item data is under 4 bytes and the peak
+  memory under 33 bytes for each stored byte.
 
 An undecoded entry is not an error: the element is read as before and the
 entry keeps its exact bytes. The schema text of the type-39 object is not

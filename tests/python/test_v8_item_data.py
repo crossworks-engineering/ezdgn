@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import dataclasses
 import gc
+import json
 import os
 import struct
 import tracemalloc
@@ -356,6 +358,100 @@ def test_item_data_of_many_hostile_elements_takes_memory_in_line_with_the_stored
     assert all(len(decoded.instances[0].attributes) == pairs for decoded in kept)
     assert current <= PYTHON_BYTES_PER_STORED_BYTE * stored, (current, stored)
     assert current < named // 8
+
+
+def test_cli_item_output_takes_memory_in_line_with_the_stored_bytes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from ezdgn import __main__ as cli
+
+    # The model of the checked-in file, 20 times, with one hostile item
+    # record on every element. Only the file read is replaced.
+    document = ezdgn.read_v8(V8)
+    (model,) = document.models
+    pairs = 300
+    hostile = _amplifying(pairs)
+    record = _record(_entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, hostile))
+
+    def run(records: tuple[ezdgn.V8AuxiliaryRecord, ...]) -> tuple[str, int, int]:
+        elements = 20 * tuple(
+            dataclasses.replace(element, auxiliary_records=records)
+            for element in model.elements
+        )
+        changed = dataclasses.replace(
+            document, models=(dataclasses.replace(model, elements=elements),)
+        )
+        monkeypatch.setattr(cli, "read_v8", lambda path: changed)
+        gc.collect()
+        tracemalloc.start()
+        try:
+            assert cli.main(["inspect", str(V8), "--entities", "--json"]) == 0
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        return capsys.readouterr().out, peak, len(elements)
+
+    plain_output, plain_peak, _ = run(())
+    output, peak, elements = run((record,))
+    assert elements == 20 * 58
+    stored = elements * len(hostile)
+    named = elements * pairs * 2 * len(LONG.encode())
+    assert named > 100 * stored
+
+    # every string is written once; a use is the position of its string
+    rows = json.loads(output)["v8_models"][0]["records"]
+    assert len(rows) == elements
+    assert all(
+        row["item_instances"]
+        == [
+            {
+                "entry_id": 1,
+                "schema_element_id": 1,
+                "strings": [LONG],
+                "class_name": 0,
+                "attributes": [[0, 0]] * pairs,
+                "properties": [],
+            }
+        ]
+        for row in rows
+    )
+    assert "item_instances" not in json.loads(plain_output)["v8_models"][0]["records"][0]
+    # The whole run, in output bytes and in peak memory, stays within a
+    # fixed multiple of the stored bytes.
+    assert len(output.encode()) - len(plain_output.encode()) <= 8 * stored
+    assert peak - plain_peak <= 2 * PYTHON_BYTES_PER_STORED_BYTE * stored, (peak, plain_peak)
+    assert peak - plain_peak < named // 4
+
+
+def test_cli_item_strings_are_listed_once_in_the_order_of_first_use() -> None:
+    from ezdgn.__main__ import _v8_item_payload
+
+    properties = (("Tag", "P-101"), ("Duty", ""), ("Standby", "P-101"), ("Tag", "Duty"))
+    item = _decode_one(_item_data(900, "Pump", ATTRIBUTES, properties))
+    assert item is not None
+    payload = _v8_item_payload(item)
+    strings = payload["strings"]
+    assert strings == [
+        "Pump",
+        "instanceId",
+        "",
+        "xmlns",
+        "Sample__x0020__Library.01.00",
+        "Tag",
+        "P-101",
+        "Duty",
+        "Standby",
+    ]
+    assert payload["entry_id"] == 1 and payload["schema_element_id"] == 900
+    assert strings[payload["class_name"]] == "Pump"
+    assert (
+        tuple((strings[name], strings[value]) for name, value in payload["attributes"])
+        == ATTRIBUTES
+    )
+    assert (
+        tuple((strings[name], strings[value]) for name, value in payload["properties"])
+        == properties
+    )
 
 
 def test_fixture_auxiliary_record_holds_one_entry_and_no_item_data() -> None:
