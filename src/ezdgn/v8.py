@@ -848,12 +848,15 @@ TAG_SET_ELEMENT_TYPE = 39
 
 
 def _iter_tag_set_objects(raw: V8RawDocument) -> Iterator[V8RawObject]:
+    # The code is read from the raw bytes when the primary part covers it:
+    # eight bytes for each object, and no copy of its primary bytes.
     return (
         item
         for page in raw.named_pages
         for item in page.objects
         if item.element_type == TAG_SET_ELEMENT_TYPE
-        and item.primary_bytes[0x28:0x30] == V8_TAG_SET_CODE
+        and item.attribute_words * 2 >= 0x30
+        and item.raw_bytes[0x28:0x30] == V8_TAG_SET_CODE
     )
 
 
@@ -964,7 +967,14 @@ class V8Document:
 
         One call decodes every tag set once, like ``tag_sets``. Keep the
         mapping and look each tag up with
-        ``mapping.get(element.data.tag_set_element_id)``.
+        ``mapping.get(element.data.tag_set_element_id)``. When more than one
+        tag-set object has an element ID, the mapping holds the first one
+        that decodes, as ``tag_set()`` returns it.
+
+        There is one difference from ``tag_set()``. This call has the limit
+        of ``tag_sets`` for all sets together, so a set that the limit
+        leaves out is not in the mapping, and ``tag_set()`` can still
+        return it.
         """
 
         result: dict[int, V8TagSet] = {}
@@ -975,18 +985,25 @@ class V8Document:
     def tag_set(self, element_id: int | None) -> V8TagSet | None:
         """The tag set a tag's ``tag_set_element_id`` refers to, if decodable.
 
-        One call walks the named objects once and decodes at most one tag
-        set: the first tag-set object with this element ID. It does not
-        decode the other sets, and nothing is kept between calls. To look up
+        One call walks the named objects once and returns the first tag-set
+        object with this element ID that decodes. It does not decode the
+        sets with another ID, and nothing is kept between calls. To look up
         the sets of many tags, build the mapping once with
         ``tag_sets_by_id()`` and do not call this for each tag.
+
+        The result is the set that ``tag_sets_by_id()`` holds for this ID,
+        with one difference: each set is decoded alone here, with the limit
+        of one set, so a set that the limit of one ``tag_sets`` call leaves
+        out of the mapping is still returned.
         """
 
         if element_id is None:
             return None
         for item in _iter_tag_set_objects(self.raw):
             if item.element_id == element_id:
-                return decode_tag_set(item)
+                decoded = decode_tag_set(item)
+                if decoded is not None:
+                    return decoded
         return None
 
     def __iter__(self) -> Iterator[V8Model]:

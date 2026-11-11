@@ -350,6 +350,62 @@ def test_one_tag_set_lookup_decodes_at_most_one_set(
     assert by_id.get(999) is None
 
 
+def test_one_lookup_and_the_mapping_give_the_same_tag_set() -> None:
+    document = ezdgn.read_v8(V8)
+    page = document.raw.named_pages[0]
+
+    def with_objects(*objects: ezdgn.V8RawObject) -> ezdgn.V8Document:
+        raw = replace(document.raw, named_pages=(replace(page, objects=objects),))
+        return replace(document, raw=raw)
+
+    good = _named_object(300, _primary(DEFINITIONS), _name_linkage(b"Grove"))
+    other = _named_object(300, _primary(DEFINITIONS), _name_linkage(b"Hedge"))
+    damaged = _named_object(300, _primary(_definition(b"A", 1, b"", 5, (0, 0), b"\x00")))
+    assert decode_tag_set(damaged) is None
+
+    # Two objects with one ID: both ways give the first one.
+    twice = with_objects(good, other)
+    assert twice.tag_set(300) == EXPECTED
+    assert twice.tag_sets_by_id() == {300: EXPECTED}
+    # The first object with the ID does not decode: both ways give the
+    # first one that does.
+    after_damage = with_objects(damaged, other, good)
+    hedge = replace(EXPECTED, name="Hedge")
+    assert after_damage.tag_set(300) == hedge
+    assert after_damage.tag_sets_by_id() == {300: hedge}
+    # No object with the ID decodes: both ways give nothing.
+    only_damage = with_objects(damaged, damaged)
+    assert only_damage.tag_set(300) is None
+    assert only_damage.tag_sets_by_id() == {}
+
+    # The one stated difference: the mapping has the limit of one call for
+    # all sets together. The third set of 400,000 bytes is over that sum, so
+    # the mapping leaves it out, and one lookup still returns it.
+    filled = _definition(b"A", 1, b"", 1, (0, 0), b"x" * (400_000 - 13) + b"\x00")
+    big = with_objects(*(_named_object(300 + index, _primary(filled)) for index in range(3)))
+    by_id = big.tag_sets_by_id()
+    assert sorted(by_id) == [300, 301]
+    assert all(big.tag_set(element_id) == by_id[element_id] for element_id in by_id)
+    last = big.tag_set(302)
+    assert last is not None and last.element_id == 302
+
+
+def test_a_tag_set_code_outside_the_primary_bytes_makes_no_tag_set() -> None:
+    document = ezdgn.read_v8(V8)
+    page = document.raw.named_pages[0]
+    good = _named_object(300, _primary(DEFINITIONS), _name_linkage(b"Grove"))
+    # The eight code bytes at 0x28, but the primary part ends before them:
+    # they are attribute bytes of this object, so it is no tag set.
+    short = replace(good, attribute_words=0x20 // 2)
+    assert short.raw_bytes[0x28:0x30] == V8_TAG_SET_CODE
+    assert short.primary_bytes[0x28:0x30] == b""
+    # The primary part ends in the middle of the code.
+    cut = replace(good, attribute_words=0x2C // 2)
+    raw = replace(document.raw, named_pages=(replace(page, objects=(short, cut, good)),))
+    assert tag_set_objects(raw) == (good,)
+    assert replace(document, raw=raw).tag_set(300) == EXPECTED
+
+
 def test_tag_set_decoding_is_bounded() -> None:
     assert V8_MAX_TAG_SET_BYTES == 1_048_576
 
