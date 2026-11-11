@@ -12,7 +12,8 @@ const ENTRY_SIZE_MASK: u32 = 0x7fff_ffff;
 /// The entry count comes from the file and an entry can be an empty
 /// 16-byte header, so a large record could ask for a long list of small
 /// entries. A payload that declares more entries is not split and stays
-/// raw. The largest count seen in one record is 8.
+/// raw. The largest count seen in one record is 4 in the public files and
+/// 8 in the confidential files.
 pub const V8_MAX_AUXILIARY_ENTRIES: usize = 1 << 16;
 
 /// One framed entry of an auxiliary-record payload.

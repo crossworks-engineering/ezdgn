@@ -90,7 +90,8 @@ inputs and are not redistributed by this repository.
   is the public evidence for the entry layout and the item instance layout in
   `FORMAT_NOTES.md`. It does not exercise the UTF-16 string form, one-byte
   strings above `0x7f`, or a set bit 31 in the entry length word;
-  `FORMAT_NOTES.md` states the evidence for those. `tests/python/test_v8_item_data.py` reads the file when
+  `FORMAT_NOTES.md` states the evidence for those.
+  `tests/python/test_v8_item_data.py` reads the file when
   `EZDGN_PUBLIC_V8_DIR` names a folder that holds it and skips otherwise.
 
 #### Tree text-node labels with tags

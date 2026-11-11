@@ -379,7 +379,8 @@ from the named pages: a type-34 header in the graphical pages of a model is
 the unknown complex element with its child count that it was before
 definitions were read, whatever its values are. A component that follows
 after the declared child counts of the run are used up has no parent; it and
-the components after it are not listed with the definition and stay raw. No
+the components after it are not listed with the definition and stay raw. The
+reader gives no count of the components that it leaves out in this way. No
 definition seen holds such a component. The values at `0xa0` and `0xe8` of the
 header, and the 79 instances without a definition, are unresolved.
 
@@ -425,7 +426,8 @@ other than the item instances below is not interpreted. A payload that does
 not hold exactly the declared number of entries followed by the closing word
 is not split at all and stays a raw payload. The entry count comes from the
 file and an entry can be an empty header, so a payload that declares more than
-65,536 entries is not split either; the largest count seen in one record is 8.
+65,536 entries is not split either. The largest count seen in one record is 4
+in the public files and 8 in the confidential files.
 
 ## Item instances
 
@@ -754,9 +756,11 @@ repository, and a reviewer cannot reproduce the counts below.
 
 Each rule was found in the same way as the rules with public evidence: the
 bytes of lawfully held files were read, a rule was stated, and it was counted
-where the rule holds and where it does not. Each rule was also checked
-against something that the reader already decodes in the same file. The table
-gives that check, the counts, and the constructed test that covers the rule.
+where the rule holds and where it does not. Most rules were also checked
+against something that the reader already decodes in the same file. Three
+rows have no such check, and they say so: one is a check of structure, and
+two rest on a code page number alone. The table gives the check, the counts,
+and the constructed test that covers the rule.
 The tests use made-up bytes only. Each rule can be taken out, and its form
 left raw, if that is preferred.
 
@@ -764,13 +768,13 @@ left raw, if that is preferred.
 | --- | --- | --- | --- |
 | Item data: the `fb` string form holds UTF-16LE units | Read as UTF-16LE, the string equals the text of a text element in the same file | 11 strings in 11 of 140 instances; each holds a character above U+00FF; 11 of 11 equal a text element | `one_byte_strings_are_code_points_and_wide_strings_are_utf16` |
 | Item data: a byte `0x80` or above in the `fa` form is one code point | Read as one code point per byte, the string equals the text of a text element in the same file; the writer uses the `fb` form for a character that a Windows-1252 byte could hold | 36 strings in 36 of 140 instances (`81` in 19, `bd` in 16, `be` in 1); 36 of 36 equal a text element | the same test |
-| Auxiliary entries: bit 31 of the length word is a flag and not part of the length | With the bit masked off the lengths split every record with no byte left over, and every item entry decodes; with the bit kept each length is longer than its record | set in 1,024 of 1,024 entries of 783 records; all 140 item entries among them decode | `splits_entries_and_keeps_every_header_word` |
+| Auxiliary entries: bit 31 of the length word is a flag and not part of the length | A check of structure only, not against other decoded data: with the bit masked off the lengths split every record with no byte left over, and every item entry decodes; with the bit kept each length is longer than its record. What the flag means is not known | set in 1,024 of 1,024 entries of 783 records; all 140 item entries among them decode | `splits_entries_and_keeps_every_header_word` |
 | 3D text: the four values are a quaternion with the scalar first | Only the first and the last value are ever not zero, which is a turn about Z when the scalar is first; the turn was compared with the end of the stored range at which the stored origin lies | 1,875 of 1,875 are unit quaternions; 1,713 not turned, 157 quarter turns, 5 half turns; 149 of the 149 turned texts of three or more characters have the origin at the end that the row rule gives, and 144 of them tell the rule from its transpose | `a_3d_text_exposes_its_stored_quaternion`: the values come back in stored order; the reader computes nothing from them |
 | Shared-cell instance: the nine matrix values are stored by rows | `origin + M * p` over the vertices of the matched definition was compared with the range that the instance stores, by rows and by columns | 2,376 instances checked; 2,319 matrices cannot tell the order (2,311 fit, 8 do not); of the 57 that can, 47 fit by rows, 0 by columns and 10 neither way | `an_instance_places_a_definition_point_with_its_matrix_by_rows` |
 | Shared-cell definitions: an instance repeats the six range values of its definition, and definitions can share a name | The six values of each instance were compared with those of every definition of that name in the file | 2,874 of 2,953 instances match one definition (one matches two equal ones); 79 name no definition of their file; the checked-in fixture shows one matching pair | `shared_cell_definitions_hold_their_components_in_their_own_space` |
-| Tags: a text byte above `0x7f` is Windows-1252 when the word at `0x13c` is 1252 | The word was read in every tag; the bytes are in the range that Windows-1252 text uses | 1,194 of 1,194 text tags store 1252; 18 values hold such a byte, all from `0xa0` to `0xff` | `decodes_tag_values_of_the_two_observed_types` |
+| Tags: a text byte above `0x7f` is Windows-1252 when the word at `0x13c` is 1252 | The word was read in every tag, and 1252 is the number of that code page. The bytes seen do not test the rule: from `0xa0` to `0xff`, Windows-1252, Latin-1 and one code point for each byte give the same character. No byte from `0x80` to `0x9f`, where they differ, was seen | 1,194 of 1,194 text tags store 1252; 18 values hold such a byte, all from `0xa0` to `0xff` | `decodes_tag_values_of_the_two_observed_types` |
 | Tags: bytes can follow the value, and a text value can be empty | The value length at `0x138` was compared with the primary size in every tag | 10 or 11 bytes follow the value in every text tag of that writer; 674 of 1,194 text values are empty | the same test |
-| Tag sets: a string byte above `0x7f` is Windows-1252 | The strings of every tag set were decoded; the bytes are in the range that Windows-1252 text uses | 92 strings in 89 decoded sets hold such a byte, all from `0xa0` to `0xff`; the public tag set holds none | `decodes_the_definitions_of_a_tag_set` |
+| Tag sets: a string byte above `0x7f` is Windows-1252 | A choice, not a finding. A tag set holds no code page number; Windows-1252 is taken because the tags of the same files store 1252. The bytes seen do not test it: from `0xa0` to `0xff`, Windows-1252, Latin-1 and one code point for each byte give the same character, and no byte from `0x80` to `0x9f` was seen | 92 strings in 89 decoded sets hold such a byte, all from `0xa0` to `0xff`; the public tag set holds none | `decodes_the_definitions_of_a_tag_set` |
 | Tag sets: a prompt can be empty | The definitions of every tag set were decoded to the declared length | 55 of 671 definitions | `decodes_the_definitions_of_a_tag_set` |
 | Tags: a tag can be a component of a shared-cell definition, can have no host, and can have a shared-cell instance as host | The host linkage of every tag was looked up among the elements of its model | 526 tags in definitions; 1,012 text tags without a host; 182 with a shared-cell instance as host, found in the same model | `tags_are_read_with_their_value_their_set_and_their_host` |
 | Tags: the origin is the sum of the pairs at `0xa0` and `0xb8` | The sum was compared with the stored range of the tag | inside the range in 1,204 of 1,204 tags; for the 182 tags with a host the first pair alone is outside it | `the_placement_is_the_sum_of_the_two_stored_pairs`, `a_tag_origin_is_given_only_inside_the_stored_range` |

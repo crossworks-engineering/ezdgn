@@ -519,7 +519,7 @@ impl V8SharedCellDefinition {
 /// A run that does not decode as a definition is skipped and stays raw;
 /// resource-limit errors are returned. Components that follow after the
 /// declared child counts are used up belong to no header: they are not part
-/// of the definition and stay raw.
+/// of the definition and stay raw. No count of them is given.
 pub fn decode_v8_shared_cell_definitions(
     raw: &V8RawDocument,
     metadata: &V8ModelMetadata,
