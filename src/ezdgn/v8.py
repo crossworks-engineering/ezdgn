@@ -906,8 +906,9 @@ def tag_sets(raw: V8RawDocument) -> tuple[V8TagSet, ...]:
     ``V8_MAX_TAG_SET_BYTES`` bytes in sum. An object costs the definition
     bytes it declares plus its attribute bytes, which hold its name. An object
     that cannot decode within the limit is passed over and costs nothing: its
-    two stored sizes differ, they declare more than the limit, or its own cost
-    is over the limit. The first other object that would pass the sum ends
+    two stored sizes differ, they declare more than the limit, its primary
+    bytes do not end with the declared definition bytes, or its own cost is
+    over the limit. The first other object that would pass the sum ends
     the call, and it and the objects after it are not listed. The core applies
     this limit; this function has no second copy of it.
     """

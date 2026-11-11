@@ -129,12 +129,8 @@ pub fn decode_v8_tag_set_data(
     attributes: &[u8],
 ) -> Option<V8TagSet> {
     let size = declared_size(primary)?;
-    let end = TAG_SET_DEFINITIONS_OFFSET.checked_add(size)?;
-    if !matches!(primary.get(end..)?, [] | [0]) {
-        return None;
-    }
     let mut cursor = Cursor {
-        data: primary.get(TAG_SET_DEFINITIONS_OFFSET..end)?,
+        data: primary.get(TAG_SET_DEFINITIONS_OFFSET..)?.get(..size)?,
         offset: 0,
     };
     let mut definitions = Vec::new();
@@ -197,7 +193,8 @@ pub fn decode_v8_tag_sets(raw: &V8RawDocument) -> Vec<V8TagSet> {
 /// costs the definition bytes it declares plus its attribute bytes, which
 /// hold its name. An object that cannot decode within the limit is passed
 /// over and costs nothing: its two stored sizes differ, they declare more
-/// than the limit, or its own cost is over the limit. The first other
+/// than the limit, its primary bytes do not end with the declared
+/// definition bytes, or its own cost is over the limit. The first other
 /// object that would pass the sum ends the call, and it and the objects
 /// after it are not listed.
 #[must_use]
@@ -223,8 +220,10 @@ pub fn decode_v8_tag_set_parts<'a>(
 }
 
 /// The declared byte length of the definitions, when the object carries the
-/// tag-set code, stores the length twice, and the length is within the
-/// limit of one set.
+/// tag-set code, stores the length twice, the length is within the limit of
+/// one set, and the primary bytes end with that many definition bytes (one
+/// zero byte may follow them). An object that declares bytes it does not
+/// hold has no size, so it is never charged for them.
 fn declared_size(primary: &[u8]) -> Option<usize> {
     if !holds_tag_set_code(primary) {
         return None;
@@ -234,7 +233,8 @@ fn declared_size(primary: &[u8]) -> Option<usize> {
         return None;
     }
     let size = usize::try_from(size).ok()?;
-    (size <= V8_MAX_TAG_SET_BYTES).then_some(size)
+    let end = TAG_SET_DEFINITIONS_OFFSET.checked_add(size)?;
+    (size <= V8_MAX_TAG_SET_BYTES && matches!(primary.get(end..)?, [] | [0])).then_some(size)
 }
 
 impl V8RawDocument {
@@ -622,6 +622,44 @@ mod tests {
         // An object whose own cost is over the limit is passed over.
         let more = vec![0; V8_MAX_TAG_SET_BYTES + 1];
         assert_eq!(ids(&[(1, &empty, &more), (3, &primary, &[])]), [3]);
+    }
+
+    #[test]
+    fn a_tag_set_that_declares_bytes_it_does_not_hold_costs_nothing() {
+        let primary = tag_set_primary(&sample_definitions());
+        let ids = |parts: &[(u64, &[u8], &[u8])]| {
+            decode_v8_tag_set_parts(parts.iter().copied())
+                .iter()
+                .map(|set| set.element_id)
+                .collect::<Vec<_>>()
+        };
+        // 60 bytes: the head alone, with the whole limit declared twice.
+        let declare = |primary: &mut Vec<u8>, size: usize| {
+            let size = u32::try_from(size).unwrap().to_le_bytes();
+            primary[TAG_SET_SIZE_OFFSET..TAG_SET_SIZE_OFFSET + 4].copy_from_slice(&size);
+            primary[TAG_SET_SIZE_OFFSET + 4..TAG_SET_SIZE_OFFSET + 8].copy_from_slice(&size);
+        };
+        let mut head_only = tag_set_primary(&[]);
+        assert_eq!(head_only.len(), 60);
+        declare(&mut head_only, V8_MAX_TAG_SET_BYTES);
+        assert!(decode_v8_tag_set_data(1, &head_only, &[]).is_none());
+        // It is not charged for the bytes it does not hold: the valid sets
+        // after it are listed, also after many such objects.
+        assert_eq!(ids(&[(1, &head_only, &[]), (2, &primary, &[])]), [2]);
+        let mut parts = vec![(1, head_only.as_slice(), &[][..]); 100];
+        parts.push((2, &primary, &[]));
+        parts.push((3, &primary, &[]));
+        assert_eq!(ids(&parts), [2, 3]);
+
+        // One byte less or two bytes more than the object holds: no size.
+        let held = sample_definitions().len();
+        for declared in [held - 1, held + 2, held + 100] {
+            let mut wrong = primary.clone();
+            declare(&mut wrong, declared);
+            assert!(declared_size(&wrong).is_none(), "{declared}");
+            assert_eq!(ids(&[(1, &wrong, &[]), (2, &primary, &[])]), [2]);
+        }
+        assert_eq!(declared_size(&primary), Some(held));
     }
 
     #[test]
