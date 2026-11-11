@@ -135,7 +135,7 @@ A release claiming this scope must pass all of the following:
   hierarchy, vertex, string, and resource-limit cases fail deterministically
   without panic, and malformed auxiliary entries, item instances, tag
   elements and tag sets stay raw without panic and without rejecting the
-  document, as does item data over the decoded size limit of one call;
+  document, as does item data over the stored size limit of one call;
 - the bounded fuzz target builds and the parser benchmark runs;
 - all Rust and Python tests, fixture integrity checks, formatting, and clippy
   checks pass;

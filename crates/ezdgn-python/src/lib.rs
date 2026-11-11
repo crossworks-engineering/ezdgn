@@ -13,10 +13,13 @@ use ezdgn_core::{
     V8Range3, V8Range3I64, V8RawDocument, V8RawObject, V8ReadOptions, V8ScanOptions, V8TagSet,
     V8TagValue, WritableElement2D,
 };
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList};
+use pyo3::types::{PyBytes, PyDict, PyList, PyString, PyTuple};
 
 create_exception!(
     _core,
@@ -337,14 +340,16 @@ fn decode_v8_item_instance_data(
     entry_id: u32,
     data: &[u8],
 ) -> PyResult<Option<Py<PyDict>>> {
+    let mut strings = ItemStrings::new(py);
     decode_v8_item_data(entry_id, data)
-        .map(|item| Ok(v8_item_instance_dict(py, &item)?.unbind()))
+        .map(|item| Ok(strings.instance_dict(&item)?.unbind()))
         .transpose()
 }
 
 /// Decode the item instances of the auxiliary payloads of one element. Each
 /// payload comes with its declared entry count. Returns the instances and
 /// the number of item entries that the size limit of one call left raw.
+/// Every use of one table string is the same Python `str` object.
 #[pyfunction]
 fn decode_v8_item_instances_data(
     py: Python<'_>,
@@ -356,9 +361,10 @@ fn decode_v8_item_instances_data(
             .filter_map(|(payload, count)| decode_v8_auxiliary_entries(payload.as_bytes(), *count))
             .flatten(),
     );
+    let mut strings = ItemStrings::new(py);
     let result = PyList::empty(py);
     for item in &decoded.instances {
-        result.append(v8_item_instance_dict(py, item)?)?;
+        result.append(strings.instance_dict(item)?)?;
     }
     Ok((result.unbind(), decoded.over_limit))
 }
@@ -880,24 +886,53 @@ fn v8_auxiliary_entries_list<'py>(
     Ok(result)
 }
 
-fn v8_item_values(values: &[V8ItemValue]) -> Vec<(&str, &str)> {
-    values
-        .iter()
-        .map(|item| (item.name.as_str(), item.value.as_str()))
-        .collect()
+/// The Python strings of the item instances of one call.
+///
+/// An instance holds one shared handle for each string of its string table,
+/// and its class name, names and values are clones of those handles. The
+/// address of a handle therefore tells the table strings apart, and each
+/// one becomes one Python `str` that every use points at. No text is copied
+/// for a second use.
+struct ItemStrings<'py> {
+    py: Python<'py>,
+    seen: HashMap<*const u8, Bound<'py, PyString>>,
 }
 
-fn v8_item_instance_dict<'py>(
-    py: Python<'py>,
-    item: &V8ItemInstance,
-) -> PyResult<Bound<'py, PyDict>> {
-    let result = PyDict::new(py);
-    result.set_item("entry_id", item.entry_id)?;
-    result.set_item("schema_element_id", item.schema_element_id)?;
-    result.set_item("class_name", &item.class_name)?;
-    result.set_item("attributes", v8_item_values(&item.attributes))?;
-    result.set_item("properties", v8_item_values(&item.properties))?;
-    Ok(result)
+impl<'py> ItemStrings<'py> {
+    fn new(py: Python<'py>) -> Self {
+        Self {
+            py,
+            seen: HashMap::new(),
+        }
+    }
+
+    fn text(&mut self, text: &Arc<str>) -> Bound<'py, PyString> {
+        let py = self.py;
+        self.seen
+            .entry(Arc::as_ptr(text).cast())
+            .or_insert_with(|| PyString::new(py, text))
+            .clone()
+    }
+
+    fn pairs(&mut self, values: &[V8ItemValue]) -> PyResult<Bound<'py, PyTuple>> {
+        let py = self.py;
+        PyTuple::new(
+            py,
+            values
+                .iter()
+                .map(|item| (self.text(&item.name), self.text(&item.value))),
+        )
+    }
+
+    fn instance_dict(&mut self, item: &V8ItemInstance) -> PyResult<Bound<'py, PyDict>> {
+        let result = PyDict::new(self.py);
+        result.set_item("entry_id", item.entry_id)?;
+        result.set_item("schema_element_id", item.schema_element_id)?;
+        result.set_item("class_name", self.text(&item.class_name))?;
+        result.set_item("attributes", self.pairs(&item.attributes)?)?;
+        result.set_item("properties", self.pairs(&item.properties)?)?;
+        Ok(result)
+    }
 }
 
 fn set_v8_tag_value(

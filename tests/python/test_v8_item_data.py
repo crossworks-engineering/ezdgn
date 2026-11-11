@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gc
 import os
 import struct
+import tracemalloc
 from collections import Counter
 from pathlib import Path
 
@@ -221,55 +223,78 @@ def _record(*entries: bytes) -> ezdgn.V8AuxiliaryRecord:
     )
 
 
-def _text_bytes(items: tuple[ezdgn.V8ItemInstance, ...]) -> int:
-    return sum(
-        len(text.encode())
-        for item in items
-        for text in (item.class_name, *(part for pair in item.attributes for part in pair))
+# One table string of 127 three-byte characters. An attribute pair is four
+# stored bytes that name it twice: 762 bytes of text.
+LONG = "あ" * 127
+
+
+def _amplifying(pairs: int) -> bytes:
+    return _item_data(1, LONG, ((LONG, LONG),) * pairs, ())
+
+
+def _decode_one(blob: bytes) -> ezdgn.V8ItemInstance | None:
+    (entry,) = decode_auxiliary_entries(
+        _payload(_entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, blob)), 1
+    )
+    return decode_item_instance(entry)
+
+
+def test_a_table_string_is_one_str_that_every_use_shares() -> None:
+    item = _decode_one(_amplifying(500))
+    assert item is not None and len(item.attributes) == 500
+    assert item.class_name == LONG
+    assert all(
+        name is item.class_name and value is item.class_name
+        for name, value in item.attributes
     )
 
+    # The same holds across the properties, and for one call that decodes
+    # the records of an element. Two instances have two tables.
+    data = _item_data(
+        1, "Pump", ATTRIBUTES, (("Tag", "P-101"), ("Standby", "P-101"), ("xmlns", "Tag"))
+    )
+    record = _record(
+        _entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, data),
+        _entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 2, data),
+    )
+    first, second = decode_item_instances((record,)).instances
+    assert first.properties == second.properties
+    assert first.properties[0][1] is first.properties[1][1]
+    assert first.properties[2][0] is first.attributes[1][0]
+    assert first.properties[2][1] is first.properties[0][0]
+    assert first.properties[0][1] is not second.properties[0][1]
+    assert isinstance(first.attributes, tuple) and isinstance(first.attributes[0], tuple)
+    assert isinstance(first.properties, tuple) and isinstance(first.properties[0], tuple)
 
-def test_item_decoding_is_held_to_the_decoded_byte_limit() -> None:
+
+def test_item_decoding_is_held_to_the_stored_byte_limit() -> None:
     assert V8_MAX_ITEM_BYTES == 1_048_576
-    # One table string of 127 three-byte characters. Each attribute pair is
-    # four stored bytes that ask for two copies of it.
-    long = "\u3042" * 127
-    assert len(long.encode()) == 381
+    fixed = len(_amplifying(0))
+    assert fixed == 288
+    # exactly the limit: decoded. Four bytes more: the entry stays raw.
+    pairs = (V8_MAX_ITEM_BYTES - fixed) // 4
+    at_limit = _amplifying(pairs)
+    assert len(at_limit) == V8_MAX_ITEM_BYTES
+    item = _decode_one(at_limit)
+    assert item is not None and len(item.attributes) == pairs
+    assert _decode_one(_amplifying(pairs + 1)) is None
 
-    def amplifying(pairs: int) -> bytes:
-        return _item_data(1, long, ((long, long),) * pairs, ())
-
-    def decode(blob: bytes) -> ezdgn.V8ItemInstance | None:
-        (entry,) = decode_auxiliary_entries(
-            _payload(_entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, blob)), 1
-        )
-        return decode_item_instance(entry)
-
-    # more than half of the limit, and inside it: decoded
-    large = amplifying(700)
-    assert len(large) < 4 * 1024
-    item = decode(large)
-    assert item is not None and len(item.attributes) == 700
-    assert V8_MAX_ITEM_BYTES // 2 < _text_bytes((item,)) <= V8_MAX_ITEM_BYTES
-    # twice that text is over the limit: the entry stays raw
-    over = amplifying(1_400)
-    assert len(over) < 8 * 1024
-    assert decode(over) is None
-
-    # One call for all records of an element shares one limit: the second
-    # large entry and the item entries after it are counted, not decoded.
+    # One call for all records of an element shares one limit. Each large
+    # entry is more than half of it: the second is counted, not decoded.
+    # The small entries after it still fit and are decoded.
+    large = _amplifying(V8_MAX_ITEM_BYTES // 8 + 1)
+    assert V8_MAX_ITEM_BYTES // 2 < len(large) < V8_MAX_ITEM_BYTES
     small = _item_data(1, "Pump", ATTRIBUTES, (("Tag", "P-101"),))
     item_type = V8_ITEM_INSTANCE_ENTRY_TYPE
     records = (
         _record(_entry(item_type, 1, large), _entry(0x5709_0000, 2, small)),
         _record(_entry(item_type, 3, large), _entry(item_type, 4, small)),
-        _record(_entry(item_type, 5, small)),
+        _record(_entry(item_type, 5, small), _entry(item_type, 6, large)),
     )
     decoded = decode_item_instances(records)
     assert isinstance(decoded, ezdgn.V8ItemInstances)
-    assert [item.entry_id for item in decoded.instances] == [1]
-    assert decoded.over_limit == 3
-    assert _text_bytes(decoded.instances) <= V8_MAX_ITEM_BYTES
+    assert [item.entry_id for item in decoded.instances] == [1, 4, 5]
+    assert decoded.over_limit == 2
 
     # without the limit in reach every item entry is listed, in stored order
     decoded = decode_item_instances(
@@ -278,6 +303,59 @@ def test_item_decoding_is_held_to_the_decoded_byte_limit() -> None:
     assert [item.entry_id for item in decoded.instances] == [1, 2]
     assert decoded.over_limit == 0
     assert decode_item_instances(()) == ezdgn.V8ItemInstances(instances=(), over_limit=0)
+
+
+def test_a_damaged_item_entry_stays_raw_and_hides_no_entry_after_it() -> None:
+    # Large entries whose layout fails only at their end.
+    large = _amplifying(V8_MAX_ITEM_BYTES // 8 + 1)
+    cut = large[:-1]
+    longer = large + b"\x00"
+    wrong_number = large[:-3] + b"\x01" + large[-2:]
+    small = _item_data(1, "Pump", ATTRIBUTES, (("Tag", "P-101"),))
+    item_type = V8_ITEM_INSTANCE_ENTRY_TYPE
+    for damaged in (cut, longer, wrong_number):
+        assert _decode_one(damaged) is None
+    decoded = decode_item_instances(
+        (
+            _record(_entry(item_type, 1, cut), _entry(item_type, 2, small)),
+            _record(_entry(item_type, 3, longer), _entry(item_type, 4, wrong_number)),
+            _record(_entry(item_type, 5, large), _entry(item_type, 6, small)),
+        )
+    )
+    assert [item.entry_id for item in decoded.instances] == [2, 5, 6]
+    assert decoded.over_limit == 0
+
+
+# Most bytes of Python objects that the tests allow for one stored byte of
+# item data. The worked number for a 64-bit CPython is 16: an attribute is
+# four stored bytes and one pair of two references. The rest is room for
+# other builds. A copy of the text for each use would need more than 100.
+PYTHON_BYTES_PER_STORED_BYTE = 32
+
+
+def test_item_data_of_many_hostile_elements_takes_memory_in_line_with_the_stored_bytes() -> None:
+    pairs, elements = 300, 1_000
+    hostile = _amplifying(pairs)
+    records = [
+        (_record(_entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, hostile)),) for _ in range(elements)
+    ]
+    stored = elements * len(hostile)
+    named = elements * pairs * 2 * len(LONG.encode())
+    assert named > 100 * stored
+
+    gc.collect()
+    tracemalloc.start()
+    try:
+        # the item data of every element, decoded and kept
+        kept = [decode_item_instances(element_records) for element_records in records]
+        current, _ = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert len(kept) == elements
+    assert all(len(decoded.instances) == 1 and decoded.over_limit == 0 for decoded in kept)
+    assert all(len(decoded.instances[0].attributes) == pairs for decoded in kept)
+    assert current <= PYTHON_BYTES_PER_STORED_BYTE * stored, (current, stored)
+    assert current < named // 8
 
 
 def test_fixture_auxiliary_record_holds_one_entry_and_no_item_data() -> None:

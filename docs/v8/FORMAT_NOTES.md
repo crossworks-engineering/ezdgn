@@ -528,16 +528,41 @@ The decoder accepts only what was observed and decodes nothing else:
   outside the table, any other token, a root without attributes, a property
   without exactly one value, a nested element, or any byte after the closing
   token leaves the entry undecoded;
-- the decoded size is held to a limit. Every name and value is a copy of a
-  string-table entry, and a two-byte reference can ask for a copy of a long
-  entry any number of times: one attribute is four stored bytes and can ask
-  for 762 bytes of text. One call therefore returns at most 1,048,576 decoded
-  bytes, counted as the UTF-8 length of every returned string plus the size of
-  a `String` for each. That holds for one entry decoded alone and for one
-  call that decodes all entries of one element. The first entry that would
-  pass that sum is not decoded, no item entry after it is decoded in that
-  call, and the call reports how many item entries it left raw. The largest
-  sum seen for one element is 1,105 (684 in the public file).
+- a table string is never copied. A string number can name a long table
+  string any number of times: one attribute is four stored bytes and can name
+  762 bytes of text. The table is therefore decoded once, and the class name,
+  each name and each value is a reference to one of its strings (a shared
+  handle in Rust, one `str` object in Python). The memory of a decoded
+  instance is then at most a fixed multiple of its stored bytes, whatever the
+  string numbers are. The worked worst case, on a 64-bit target:
+
+  | Part of an instance | Stored bytes | Rust, bytes | CPython 3.12, bytes |
+  |---|---:|---:|---:|
+  | one attribute (two string numbers) | 4 | 32: two handles | 64: one pair of two references and its place in the list |
+  | one property | 5 | 32 | 64 |
+  | the class name | 2 | 16: one handle | 8: one reference |
+  | an empty table string | 2 | 16: the two counters of its block | 0: the shared empty string |
+  | a table string of one wide character | 4 | 19 | 60 |
+  | the longest table string, 127 wide units | 256 | 397 | 312 |
+  | head, signature, counts and marks | 30 | 72: the fixed part | 216 at most: the fixed part |
+
+  That is at most 8 bytes of memory for one stored byte in Rust and at most
+  16 in Python. A run in Python on nine constructed shapes gave 1.3 to 15.7.
+  On a 32-bit target the Rust number is 4 (worked out, not run);
+- one call decodes at most 1,048,576 stored bytes of item data, so one call
+  returns at most 8 MiB in Rust and 16 MiB of objects in Python. The data of
+  each returned instance counts. An item entry whose data is larger than
+  what the call has left is not decoded, and the call reports how many
+  entries it left raw for that reason; the entries after it are still read.
+  An entry that does not match the layout costs nothing and hides no entry
+  after it. One entry decoded alone has the same limit. The largest item
+  data seen on one element is 388 stored bytes in the public file (408 in
+  the confidential files); and
+- the sum over a document needs no second limit. An auxiliary record belongs
+  to one element, so the item data of all elements together is at most the
+  inflated bytes of the file, which `max_total_inflated_bytes` holds. A
+  caller that keeps the item data of every element holds at most 8 times
+  (Rust) or 16 times (Python) those bytes.
 
 An undecoded entry is not an error: the element is read as before and the
 entry keeps its exact bytes. The schema text of the type-39 object is not

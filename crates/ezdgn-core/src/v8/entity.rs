@@ -379,8 +379,8 @@ impl V8Element {
     ///
     /// They are decoded on each call and are not stored with the element. An
     /// entry that does not match the observed layout is not listed and stays
-    /// available through `auxiliary_records`. One call returns at most
-    /// [`V8_MAX_ITEM_BYTES`](super::V8_MAX_ITEM_BYTES) decoded bytes; use
+    /// available through `auxiliary_records`. One call decodes at most
+    /// [`V8_MAX_ITEM_BYTES`](super::V8_MAX_ITEM_BYTES) stored bytes; use
     /// [`Self::decode_item_instances`] to learn whether that limit left an
     /// entry out.
     #[must_use]
@@ -1811,7 +1811,7 @@ fn geometry_error(raw: &V8RawObject, context: impl Into<String>) -> DgnError {
 mod tests {
     use super::*;
     use crate::v8::auxiliary::test_support::{entry, payload};
-    use crate::v8::item::test_support::item_data;
+    use crate::v8::item::test_support::{item_data, memory as item_memory, MEMORY_PER_STORED_BYTE};
     use crate::v8::raw::test_support::{
         auxiliary_record, dgn_with_objects, dgn_with_objects_and_auxiliary, dgn_with_pages,
         MODEL_ID,
@@ -1954,10 +1954,7 @@ mod tests {
 
         let items = element.item_instances();
         assert_eq!(items.len(), 2);
-        assert_eq!(
-            (items[0].entry_id, items[0].class_name.as_str()),
-            (1, "Pump")
-        );
+        assert_eq!((items[0].entry_id, &*items[0].class_name), (1, "Pump"));
         assert_eq!(items[0].schema_element_id, 900);
         assert_eq!(items[0].property("Tag"), Some("P-101"));
         assert_eq!(items[0].property("Note"), Some(""));
@@ -1965,22 +1962,20 @@ mod tests {
             items[0].schema_reference(),
             Some("Sample__x0020__Library.01.00")
         );
-        assert_eq!(
-            (items[1].entry_id, items[1].class_name.as_str()),
-            (2, "History")
-        );
+        assert_eq!((items[1].entry_id, &*items[1].class_name), (2, "History"));
         assert_eq!(items[1].property("Installed"), Some("1986-01-01"));
     }
 
     #[test]
     fn item_data_over_the_size_limit_stays_raw_and_is_counted() {
         // One table string of 127 three-byte characters; every attribute
-        // pair is four stored bytes that ask for two copies of it.
+        // pair is four stored bytes that name it twice.
         let long = "\u{3042}".repeat(127);
-        // enough pairs for more than half of the limit in text alone
-        let pairs = crate::v8::V8_MAX_ITEM_BYTES / (4 * long.len()) + 1;
+        // enough pairs for more than half of the limit in stored bytes
+        let pairs = crate::v8::V8_MAX_ITEM_BYTES / 8 + 1;
         let attributes = vec![(long.as_str(), long.as_str()); pairs];
         let large = item_data(900, &long, &attributes, &[]);
+        assert!(large.len() > crate::v8::V8_MAX_ITEM_BYTES / 2);
         let small = item_data(900, "Pump", &ITEM_ATTRIBUTES, &[("Tag", "P-101")]);
         let record = auxiliary_record(
             SHARED_CELL_ELEMENT_ID,
@@ -1991,7 +1986,6 @@ mod tests {
                 entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 3, true, &small),
             ]),
         );
-        assert!(record.len() < 16 * 1024);
         // the file is read, and the record keeps its exact bytes
         let document = read_with_auxiliary(std::slice::from_ref(&record));
         let element = &document.models[0].elements[0];
@@ -1999,18 +1993,83 @@ mod tests {
         assert_eq!(element.auxiliary_records[0].as_bytes(), record.as_slice());
         assert_eq!(element.auxiliary_records[0].entries().unwrap().len(), 3);
 
+        // The second large entry does not fit in what the call has left: it
+        // is counted and stays raw. The small entry after it is decoded.
         let decoded = element.decode_item_instances();
-        assert_eq!(decoded.instances.len(), 1);
-        assert_eq!(decoded.instances[0].entry_id, 1);
-        assert_eq!(decoded.over_limit, 2);
+        assert_eq!(
+            decoded
+                .instances
+                .iter()
+                .map(|item| item.entry_id)
+                .collect::<Vec<_>>(),
+            [1, 3]
+        );
+        assert_eq!(decoded.over_limit, 1);
         assert_eq!(element.item_instances(), decoded.instances);
-        let text_bytes = decoded.instances[0]
-            .attributes
+        assert_eq!(decoded.instances[0].attributes.len(), pairs);
+        let stored = large.len() + small.len();
+        assert!(stored <= crate::v8::V8_MAX_ITEM_BYTES);
+        let memory = decoded.instances.iter().map(item_memory).sum::<usize>();
+        assert!(memory <= MEMORY_PER_STORED_BYTE * stored);
+    }
+
+    #[test]
+    fn the_item_data_of_many_hostile_elements_takes_memory_in_line_with_the_stored_bytes() {
+        // Every element carries one instance that names one long table
+        // string 600 times: 1,200 stored bytes that name 228,600 bytes of
+        // text. All instances of the document are decoded and kept.
+        const ELEMENTS: usize = 2_000;
+        const PAIRS: usize = 300;
+        let long = "\u{3042}".repeat(127);
+        let attributes = vec![(long.as_str(), long.as_str()); PAIRS];
+        let hostile = item_data(900, &long, &attributes, &[]);
+        let mut objects = Vec::new();
+        let mut records = Vec::new();
+        for element_id in (1_000..).take(ELEMENTS) {
+            let mut object = shared_cell_record(0, [1.0, 2.0, 0.0]);
+            write_u64(&mut object, 0x10, element_id);
+            objects.push(object);
+            records.push(auxiliary_record(
+                element_id,
+                1,
+                &payload(&[entry(V8_ITEM_INSTANCE_ENTRY_TYPE, 1, true, &hostile)]),
+            ));
+        }
+        let dgn = dgn_with_objects_and_auxiliary(&model_header(), &objects, &records);
+        let document = read_v8(&dgn, V8ScanOptions::default()).unwrap();
+        let elements = &document.models[0].elements;
+        assert_eq!(elements.len(), ELEMENTS);
+
+        let kept = elements
             .iter()
+            .map(V8Element::decode_item_instances)
+            .collect::<Vec<_>>();
+        assert!(kept
+            .iter()
+            .all(|decoded| decoded.instances.len() == 1 && decoded.over_limit == 0));
+        let instances = kept.iter().flat_map(|decoded| &decoded.instances);
+
+        // The stored bytes are the item data of every auxiliary record.
+        let stored = ELEMENTS * hostile.len();
+        let named = instances
+            .clone()
+            .flat_map(|item| &item.attributes)
             .map(|pair| pair.name.len() + pair.value.len())
             .sum::<usize>();
-        assert_eq!(text_bytes, pairs * 2 * long.len());
-        assert!(text_bytes <= crate::v8::V8_MAX_ITEM_BYTES);
+        assert_eq!(named, ELEMENTS * PAIRS * 2 * long.len());
+        assert!(named > 100 * stored);
+        // The memory of all instances together is at most a fixed multiple
+        // of the stored bytes.
+        let memory = instances.clone().map(item_memory).sum::<usize>();
+        assert!(
+            memory <= MEMORY_PER_STORED_BYTE * stored,
+            "{memory} bytes of memory for {stored} stored bytes"
+        );
+        assert!(memory < named / 15);
+        // Each instance holds its table string once.
+        assert!(instances
+            .clone()
+            .all(|item| Arc::strong_count(&item.class_name) == 1 + 2 * PAIRS));
     }
 
     #[test]

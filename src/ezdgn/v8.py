@@ -231,6 +231,10 @@ class V8ItemInstance:
     and ``properties`` are the property names with their text values, all in
     stored order and exactly as stored. ``schema_element_id`` is the element ID
     of the named object that holds the schema text.
+
+    The stored instance has a string table, and its names and values are
+    numbers of table strings. Each table string is one ``str`` object here,
+    and every use of it is a reference to that object, not a copy.
     """
 
     entry_id: int
@@ -269,8 +273,8 @@ class V8ItemInstances:
     """The item instances of one call, and what the size limit left raw.
 
     ``over_limit`` is the number of item entries that were not decoded because
-    the call reached ``V8_MAX_ITEM_BYTES``: the first entry that did not fit
-    and every item entry after it. They stay raw in their records.
+    their data was larger than what the call had left of
+    ``V8_MAX_ITEM_BYTES``. They stay raw in their records.
     """
 
     instances: tuple[V8ItemInstance, ...]
@@ -534,8 +538,8 @@ class V8Element:
 
         They are decoded from ``auxiliary_records`` on each access. An entry
         that does not match the observed layout is not listed; it stays
-        available through the entries of its record. One access returns at
-        most ``V8_MAX_ITEM_BYTES`` decoded bytes;
+        available through the entries of its record. One access decodes at
+        most ``V8_MAX_ITEM_BYTES`` stored bytes;
         ``decode_item_instances(element.auxiliary_records)`` also tells how
         many item entries that limit left out.
         """
@@ -1186,8 +1190,10 @@ def _item_instance_from_core(row: dict[str, Any]) -> V8ItemInstance:
         entry_id=row["entry_id"],
         schema_element_id=row["schema_element_id"],
         class_name=row["class_name"],
-        attributes=tuple((name, value) for name, value in row["attributes"]),
-        properties=tuple((name, value) for name, value in row["properties"]),
+        # The core gives tuples of pairs. Every use of one table string is
+        # the same ``str`` object, so the pairs are kept as they are.
+        attributes=row["attributes"],
+        properties=row["properties"],
     )
 
 
@@ -1215,9 +1221,8 @@ def decode_item_instance(entry: V8AuxiliaryEntry) -> V8ItemInstance | None:
     """Decode an entry of type ``V8_ITEM_INSTANCE_ENTRY_TYPE``.
 
     Returns ``None`` for another entry type, for data that does not match the
-    observed layout exactly, and for an instance of more than
-    ``V8_MAX_ITEM_BYTES`` decoded bytes; the entry keeps its raw ``data`` in
-    every case.
+    observed layout exactly, and for data of more than ``V8_MAX_ITEM_BYTES``
+    bytes; the entry keeps its raw ``data`` in every case.
     """
 
     if entry.type_id != V8_ITEM_INSTANCE_ENTRY_TYPE:
@@ -1231,12 +1236,15 @@ def decode_item_instances(records: Iterable[V8AuxiliaryRecord]) -> V8ItemInstanc
 
     The instances are in stored order. An entry of another type, an item
     entry that does not match the observed layout and a record whose payload
-    does not split into entries are not listed. Each name and value is a copy
-    of a string-table entry that the stored data can ask for any number of
-    times, so one call returns at most ``V8_MAX_ITEM_BYTES`` decoded bytes
-    (the UTF-8 length of every returned string plus a fixed cost for each).
-    The first item entry that would pass that sum ends the decoding; it and
-    the item entries after it are counted in ``over_limit`` and stay raw.
+    does not split into entries are not listed and cost nothing.
+
+    A table string is decoded once and every use of it is a reference to one
+    ``str``, so the memory of the result is at most a fixed multiple of the
+    stored bytes (16 bytes for one stored byte on a 64-bit CPython). One call
+    decodes at most ``V8_MAX_ITEM_BYTES`` stored bytes: the data of each
+    returned instance counts, and an item entry whose data is larger than
+    what is left is counted in ``over_limit`` and stays raw. The entries
+    after it are still read.
     """
 
     rows, over_limit = _decode_v8_item_instances_data(
