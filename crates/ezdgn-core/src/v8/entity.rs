@@ -1814,7 +1814,7 @@ mod tests {
     use crate::v8::item::test_support::{item_data, memory as item_memory, MEMORY_PER_STORED_BYTE};
     use crate::v8::raw::test_support::{
         auxiliary_record, dgn_with_objects, dgn_with_objects_and_auxiliary, dgn_with_pages,
-        MODEL_ID,
+        reproducible_dgn_with_pages, zlib_stored, MODEL_ID,
     };
     use crate::v8::tag::test_support::{
         definition_bytes, host_linkage, tag_primary, tag_set_linkage, tag_set_primary, TagParts,
@@ -2956,8 +2956,10 @@ mod tests {
         ]
     }
 
+    /// The document of the tag tests. Its bytes depend on the values in
+    /// this file alone: no clock and no compression library takes part.
     fn tagged_dgn() -> Vec<u8> {
-        dgn_with_pages(
+        reproducible_dgn_with_pages(
             &model_header(),
             &tagged_model_objects(),
             &[],
@@ -2965,15 +2967,58 @@ mod tests {
         )
     }
 
+    /// The checked-in file that the Python tests and the stream tests read.
+    const CONSTRUCTED_TAGS: &[u8] =
+        include_bytes!("../../../../tests/data/dgn/v8/constructed_tags.dgn");
+
     /// Writes the document of the tag tests to the path that the variable
     /// `EZDGN_WRITE_TAG_FIXTURE` names. This made the checked-in file
-    /// `tests/data/dgn/v8/constructed_tags.dgn`, which the Python tests and
-    /// the stream tests read.
+    /// `tests/data/dgn/v8/constructed_tags.dgn`.
     #[test]
     #[ignore = "writes a fixture file; run it by name with EZDGN_WRITE_TAG_FIXTURE set"]
     fn write_the_constructed_tag_fixture() {
         let path = std::env::var("EZDGN_WRITE_TAG_FIXTURE").expect("EZDGN_WRITE_TAG_FIXTURE");
         std::fs::write(path, tagged_dgn()).unwrap();
+    }
+
+    #[test]
+    fn the_checked_in_tag_file_is_what_the_builder_writes_byte_for_byte() {
+        let built = tagged_dgn();
+        assert_eq!(built.len(), CONSTRUCTED_TAGS.len());
+        assert!(
+            built == CONSTRUCTED_TAGS,
+            "tests/data/dgn/v8/constructed_tags.dgn is not what the builder writes; \
+             write it again with write_the_constructed_tag_fixture and put its new \
+             hash into SHA256SUMS"
+        );
+        // no clock in the bytes: a second build is the same
+        assert!(tagged_dgn() == built);
+    }
+
+    #[test]
+    fn a_stored_zlib_stream_is_fixed_bytes_and_inflates_to_its_input() {
+        use std::io::Read;
+
+        // written out by hand: header, one final stored block, Adler-32
+        assert_eq!(
+            zlib_stored(b"abc"),
+            [0x78, 0x01, 0x01, 3, 0, 0xfc, 0xff, b'a', b'b', b'c', 0x02, 0x4d, 0x01, 0x27]
+        );
+        assert_eq!(
+            zlib_stored(b""),
+            [0x78, 0x01, 0x01, 0, 0, 0xff, 0xff, 0, 0, 0, 1]
+        );
+        // more than one block
+        let long = (0..150_000_u32)
+            .map(|value| value as u8)
+            .collect::<Vec<_>>();
+        let stream = zlib_stored(&long);
+        assert_eq!(stream.len(), 2 + 3 * 5 + long.len() + 4);
+        let mut inflated = Vec::new();
+        flate2::read::ZlibDecoder::new(stream.as_slice())
+            .read_to_end(&mut inflated)
+            .unwrap();
+        assert!(inflated == long);
     }
 
     #[test]

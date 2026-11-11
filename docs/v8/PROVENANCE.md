@@ -34,8 +34,8 @@ complex-element relationship and therefore is not a source-semantic oracle.
 
 ### Constructed tag file
 
-- Binary: `tests/data/dgn/v8/constructed_tags.dgn`, 4,096 bytes, SHA-256
-  `51b4b36ffbdf04b94ff1f53f61ae45166d9dc8f268bbe85d66408c400523d5f7`
+- Binary: `tests/data/dgn/v8/constructed_tags.dgn`, 7,680 bytes, SHA-256
+  `407f7dd8f5093646d4f27735d92b45c13319e08c8b1471a49d09e693160f2261`
 - Origin: written by this repository's own test builder from made-up values
   (`write_the_constructed_tag_fixture` in
   `crates/ezdgn-core/src/v8/entity.rs`). It is synthetic. It is not derived
@@ -48,6 +48,17 @@ complex-element relationship and therefore is not a source-semantic oracle.
   the Rust reader to the Python objects is tested for a tag in every test
   run. The expected values are the inputs of the builder. It is not evidence
   for any format rule.
+- Reproducible: the bytes depend on the input of the builder alone. Each
+  stream is a zlib stream of stored blocks that the builder writes by hand,
+  so no compression library takes part. Each storage carries the fixed time
+  1970-01-01 00:00:00 UTC, and the root and the streams carry no time, so no
+  clock takes part. The default test run builds the file in memory and
+  compares it byte for byte with the checked-in file
+  (`the_checked_in_tag_file_is_what_the_builder_writes_byte_for_byte`). The
+  layout of the container comes from the `cfb` crate at the version in
+  `Cargo.lock` (0.14.0). A later version of that crate can lay the same
+  content out in another way; that test then fails and says how to write the
+  file again.
 
 ### Public CFB structure
 
